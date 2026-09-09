@@ -1,0 +1,28 @@
+# === Sistema operacional ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Logs e temporários ===
+*.log
+*.tmp
+*.swp
+*~
+
+# === Segredos / VPN — NUNCA versionar ===
+*.ovpn
+*.pem
+*.key
+*.crt
+.env
+.env.*
+*secret*
+*credential*
+
+# === Config local de agentes (manter exemplos, ignorar locais) ===
+.claude/settings.local.json
+.claude/*.lock
+
+# === Python ===
+__pycache__/
+*.py[cod]

@@ -31,12 +31,12 @@ def inside(root: Path, relative: str) -> Path:
 def safe_text(path: Path, relative: str):
     parts = {p.lower() for p in Path(relative).parts}
     if parts & DENIED or path.suffix.lower() not in EXT or path.name.startswith('.env'):
-        raise ValueError('Arquivo excluído da consulta')
+        raise ValueError('Arquivo excluído da consulta: '+relative)
     if not path.is_file() or path.stat().st_size > 300_000:
-        raise ValueError('Arquivo ausente ou maior que 300 KB')
+        raise ValueError('Arquivo ausente ou maior que 300 KB: '+relative)
     text = path.read_text(encoding='utf-8')
     if '\x00' in text or SECRET.search(text):
-        raise ValueError('Conteúdo potencialmente sensível ou binário; revisão manual necessária')
+        raise ValueError('Conteúdo potencialmente sensível ou binário; revisão manual necessária: '+relative)
     return text
 
 def git_state(repo: Path):
@@ -44,30 +44,30 @@ def git_state(repo: Path):
         result = subprocess.run(['git', '-C', str(repo), *args], capture_output=True, text=True, timeout=10)
         return result.stdout.strip() if result.returncode == 0 else None
     return {'head': run('rev-parse', 'HEAD'), 'branch': run('branch', '--show-current'),
-            'dirty': bool(run('status', '--porcelain'))}
+            'sujo': bool(run('status', '--porcelain'))}
 
-def build(vault: Path, sites: Path, project: str, question: str, repo: str = '', files=None):
-    if not question.strip() or len(question) > 12000:
+def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: str = '', arquivos=None):
+    if not pergunta.strip() or len(pergunta) > 12000:
         raise ValueError('Pergunta obrigatória, até 12000 caracteres')
-    scope = inside(vault, project)
+    scope = inside(vault, projeto)
     if not scope.is_dir() or scope == vault.resolve() or not (scope / 'README.md').is_file():
         raise ValueError('Projeto deve ser uma pasta do Valt com README.md')
-    if set(Path(project).parts) & DENIED:
+    if set(Path(projeto).parts) & DENIED:
         raise ValueError('Projeto excluído')
-    repo_path = inside(sites, repo) if repo else None
-    if repo_path and (not repo_path.is_dir() or len(Path(repo).parts) < 2):
+    repo_path = inside(sites, repositorio) if repositorio else None
+    if repo_path and (not repo_path.is_dir() or len(Path(repositorio).parts) < 2):
         raise ValueError('Repositório deve ser específico: guarda-chuva/repo')
     if repo_path:
         index = (vault/'indices/repositorios.md').read_text(encoding='utf-8')
-        related = [line for line in index.splitlines() if '`~/Sites/'+repo+'`' in line]
-        if not any('../'+project+'/' in line for line in related):
+        related = [line for line in index.splitlines() if '`~/Sites/'+repositorio+'`' in line]
+        if not any('../'+projeto+'/' in line for line in related):
             raise ValueError('Projeto e repositório não correspondem no índice do Valt')
-    candidates, warnings = [], []
+    candidates, avisos = [], []
     mandatory = [vault/'AGENTS.md', vault/'CLAUDE.md', scope/'README.md', scope/'Repositorio/mapa-repositorio.md']
     # Diário da raiz é filtrado por tarefa/projeto; não escolher simplesmente a primeira entrada.
-    diary = vault/Path(project).parts[0]/'continuidade/dataehoradaultimaatualizacao.md'
+    diary = vault/Path(projeto).parts[0]/'continuidade/dataehoradaultimaatualizacao.md'
     paths = list(dict.fromkeys(mandatory + sorted(scope.rglob('*.md')) + [diary]))
-    query = terms(question)
+    query = terms(pergunta)
     for path in paths:
         rel = path.relative_to(vault).as_posix()
         try:
@@ -76,7 +76,7 @@ def build(vault: Path, sites: Path, project: str, question: str, repo: str = '',
             continue
         if path == diary:
             entries = re.split(r'(?m)(?=^## )', content)
-            selected = [s for s in entries if terms(Path(project).name) & terms(s)]
+            selected = [s for s in entries if terms(Path(projeto).name) & terms(s)]
             content = '\n'.join(selected[:2])
             if not content:
                 continue
@@ -84,44 +84,48 @@ def build(vault: Path, sites: Path, project: str, question: str, repo: str = '',
         if path in mandatory or score:
             candidates.append((path not in mandatory, -score, rel, content, path))
     candidates.sort(key=lambda item: item[:3])
-    sources, blocks, budget = [], [], 30000
+    fontes, blocks, budget = [], [], 30000
     def add(rel, content, path, limit):
         nonlocal budget
         excerpt = content[:min(limit, budget)]
         if not excerpt:
             return
-        truncated = len(excerpt) < len(content)
-        blocks.append(f'### {rel}\n{excerpt}' + ('\n[TRUNCADO — solicite contexto adicional]' if truncated else ''))
-        sources.append({'file': rel, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'truncated': truncated})
+        truncado = len(excerpt) < len(content)
+        blocks.append(f'### {rel}\n{excerpt}' + ('\n[TRUNCADO — solicite contexto adicional]' if truncado else ''))
+        fontes.append({'arquivo': rel, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'truncado': truncado})
         budget -= len(excerpt)
     for _, _, rel, content, path in candidates[:8]:
         add('Valt/'+rel, content, path, 9000 if path == vault/'AGENTS.md' else 5000)
-    files = files or []
-    if len(files) > 6 or (files and not repo_path):
+    arquivos = arquivos or []
+    if len(arquivos) > 6 or (arquivos and not repo_path):
         raise ValueError('Até 6 arquivos de código e repositório explícito obrigatório')
-    for rel in files:
-        path = inside(repo_path, rel)
-        content = safe_text(path, rel)
+    for rel in arquivos:
+        try:
+            path = inside(repo_path, rel)
+            content = safe_text(path, rel)
+        except ValueError as exc:
+            raise ValueError(f'{exc} — `arquivos` recebe caminhos relativos ao repositório {repositorio}; '
+                             'notas do Valt entram automaticamente, não as passe aqui') from exc
         if len(content) > budget:
             raise ValueError('Arquivos excedem o orçamento; reduza o pacote')
-        add('Sites/'+repo+'/'+rel, content, path, len(content))
-    if not sources:
+        add('Sites/'+repositorio+'/'+rel, content, path, len(content))
+    if not fontes:
         raise ValueError('Nenhuma fonte utilizável')
-    return {'project': project, 'repo': repo, 'question': question, 'sources': sources,
-            'repository': git_state(repo_path) if repo_path else None,
-            'warnings': warnings, 'text': '\n\n'.join(blocks)}
+    return {'projeto': projeto, 'repositorio': repositorio, 'pergunta': pergunta, 'fontes': fontes,
+            'estado_git': git_state(repo_path) if repo_path else None,
+            'avisos': avisos, 'texto': '\n\n'.join(blocks)}
 
-def stale(packet, vault, sites):
-    changed = []
-    for src in packet['sources']:
-        root, rel = src['file'].split('/', 1)
+def stale(pacote, vault, sites):
+    alteradas = []
+    for fonte in pacote['fontes']:
+        root, rel = fonte['arquivo'].split('/', 1)
         try:
             path = inside(vault if root == 'Valt' else sites, rel)
             digest = hashlib.sha256(path.read_bytes()).hexdigest()
         except (ValueError, OSError):
             digest = None
-        if digest != src['sha256']:
-            changed.append(src['file'])
-    if packet['repo'] and git_state(inside(sites, packet['repo'])) != packet['repository']:
-        changed.append('estado Git do repositório')
-    return changed
+        if digest != fonte['sha256']:
+            alteradas.append(fonte['arquivo'])
+    if pacote['repositorio'] and git_state(inside(sites, pacote['repositorio'])) != pacote['estado_git']:
+        alteradas.append('estado Git do repositório')
+    return alteradas

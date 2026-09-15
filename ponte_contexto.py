@@ -11,6 +11,13 @@ DENIED = {'vpn', 'secrets', '.git', '.ssh', '.cursor', '.codex', '.claude',
           'node_modules', 'vendor', 'consultas', 'contextos', 'handoffs'}
 EXT = {'.md', '.py', '.js', '.ts', '.tsx', '.jsx', '.css', '.html', '.sh', '.sql'}
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})|(?im:^\s*(?:[\w-]*(?:secret|password|token|api_key)[\w-]*)\s*[:=]\s*[\'\"]?[^\s\'\"$<{]{12,})')
+LEMBRETE_CONSULTOR = (
+    'Gatilhos: migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
+    'revisão final com mais de 20 arquivos. Chame consulta_iniciar (provedor: claude, '
+    'interativo: false) e aguarde consulta_status. Task e agents internos do Cursor não '
+    'substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
+    'Layout Editor não é a ponte.'
+)
 
 def terms(value):
     value = ''.join(c for c in unicodedata.normalize('NFKD', value.lower()) if not unicodedata.combining(c))
@@ -83,6 +90,20 @@ def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: st
         score = len(query & terms(content)) + 3 * len(query & terms(rel))
         if path in mandatory or score:
             candidates.append((path not in mandatory, -score, rel, content, path))
+    arquivos = arquivos or []
+    if len(arquivos) > 6 or (arquivos and not repo_path):
+        raise ValueError('Até 6 arquivos de código e repositório explícito obrigatório')
+    code_items = []
+    for rel in arquivos:
+        try:
+            path = inside(repo_path, rel)
+            content = safe_text(path, rel)
+        except ValueError as exc:
+            raise ValueError(f'{exc} — `arquivos` recebe caminhos relativos ao repositório {repositorio}; '
+                             'notas do Valt entram automaticamente, não as passe aqui') from exc
+        code_items.append((rel, content, path))
+    if sum(len(content) for _, content, _ in code_items) > 60000:
+        raise ValueError('Arquivos excedem o orçamento; reduza o pacote')
     candidates.sort(key=lambda item: item[:3])
     fontes, blocks, budget = [], [], 30000
     def add(rel, content, path, limit):
@@ -96,24 +117,15 @@ def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: st
         budget -= len(excerpt)
     for _, _, rel, content, path in candidates[:8]:
         add('Valt/'+rel, content, path, 9000 if path == vault/'AGENTS.md' else 5000)
-    arquivos = arquivos or []
-    if len(arquivos) > 6 or (arquivos and not repo_path):
-        raise ValueError('Até 6 arquivos de código e repositório explícito obrigatório')
-    for rel in arquivos:
-        try:
-            path = inside(repo_path, rel)
-            content = safe_text(path, rel)
-        except ValueError as exc:
-            raise ValueError(f'{exc} — `arquivos` recebe caminhos relativos ao repositório {repositorio}; '
-                             'notas do Valt entram automaticamente, não as passe aqui') from exc
-        if len(content) > budget:
-            raise ValueError('Arquivos excedem o orçamento; reduza o pacote')
+    budget += 50000
+    for rel, content, path in code_items:
         add('Sites/'+repositorio+'/'+rel, content, path, len(content))
     if not fontes:
         raise ValueError('Nenhuma fonte utilizável')
     return {'projeto': projeto, 'repositorio': repositorio, 'pergunta': pergunta, 'fontes': fontes,
             'estado_git': git_state(repo_path) if repo_path else None,
-            'avisos': avisos, 'texto': '\n\n'.join(blocks)}
+            'avisos': avisos, 'texto': '\n\n'.join(blocks),
+            'lembrete_consultor': LEMBRETE_CONSULTOR}
 
 def stale(pacote, vault, sites):
     alteradas = []

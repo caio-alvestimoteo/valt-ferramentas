@@ -45,6 +45,13 @@ class PonteTest(unittest.TestCase):
     # --- contexto
     def test_contexto_isolado_por_projeto(self):
         p=self.build(); self.assertNotIn('Outro',p['texto']);self.assertIn('login.md',p['texto'])
+    def test_lembrete_consultor_sempre_presente(self):
+        p=self.build()
+        self.assertEqual(p['lembrete_consultor'], ctx.LEMBRETE_CONSULTOR)
+        self.assertIn('consulta_iniciar', p['lembrete_consultor'])
+        self.assertIn('Ptyxis', p['lembrete_consultor'])
+        self.assertIn('Task', p['lembrete_consultor'])
+        self.assertIn('Editor', p['lembrete_consultor'])
     def test_sem_correspondencia_so_obrigatorios_e_diario_do_projeto(self):
         p=self.build('zzzinexistente');self.assertNotIn('login.md',p['texto']);self.assertNotIn('Primor errado',p['texto'])
     def test_pergunta_vazia(self):
@@ -75,6 +82,15 @@ class PonteTest(unittest.TestCase):
         self.assertIn('print(1)',p['texto'])
         self.assertEqual(p['fontes'][-1]['arquivo'],'Sites/Seara/food/main.py')
         self.assertIn('sujo',p['estado_git'])
+    def test_codigo_nao_perde_espaco_para_notas(self):
+        self.put(self.v/'AGENTS.md','Regras '*2000)
+        self.put(self.v/'CLAUDE.md','Claude '*2000)
+        self.put(self.project/'README.md','Food '*2000)
+        self.put(self.project/'Repositorio/mapa-repositorio.md','mapa '*2000)
+        self.put(self.s/'Seara/food/big.py','x'*25000)
+        p=self.build(repositorio='Seara/food',arquivos=['big.py'])
+        self.assertIn('Sites/Seara/food/big.py',[f['arquivo'] for f in p['fontes']])
+        self.assertGreaterEqual(len(p['texto']),25000)
     def test_segredo_no_codigo(self):
         self.put(self.s/'Seara/food/config.py','API_KEY="sk-'+('x'*30)+'"')
         with self.assertRaises(ValueError):self.build(repositorio='Seara/food',arquivos=['config.py'])
@@ -128,8 +144,12 @@ class PonteTest(unittest.TestCase):
         tools=responses[1]['result']['tools']
         self.assertEqual(len(tools),4)
         self.assertEqual(set(tools[1]['inputSchema']['required']),{'projeto','pergunta','provedor','id_pedido'})
+        self.assertIn('Ptyxis', tools[1]['description'])
+        self.assertIn('Task', tools[1]['description'])
+        self.assertIn('não contam', tools[1]['description'])
         self.assertNotIn('isError',responses[2]['result'])
         self.assertIn('"fontes"',responses[2]['result']['content'][0]['text'])
+        self.assertIn('lembrete_consultor', responses[2]['result']['content'][0]['text'])
     def test_abertura_e_idempotencia(self):
         with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen') as popen:
             first=ponte.start('Seara/Food','login','claude',id_pedido='r1')
@@ -144,6 +164,16 @@ class PonteTest(unittest.TestCase):
         jid=self.create_job(pid_dono=999999999)
         self.assertEqual(ponte.mark(jid,estado='executando')['estado'],'cancelada')
         self.assertEqual(ponte.status(jid)['estado'],'cancelada')
+    def test_dono_inacessivel_nao_cancela(self):
+        jid=self.create_job(pid_dono=1)
+        with patch('ponte.os.kill',side_effect=PermissionError):
+            self.assertEqual(ponte.mark(jid,estado='executando')['estado'],'executando')
+    def test_abertura_sem_dono_ate_o_worker(self):
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen'):
+            data=ponte.start('Seara/Food','login','claude',id_pedido='r-worker')
+            job=ponte.read_job(data['id'])
+            self.assertIsNone(job['pid_dono'])
+            self.assertEqual(job['estado'],'abrindo')
     def test_provedor_falso_ponta_a_ponta(self):
         jid=self.create_job()
         with patch('ponte.provider_command',return_value=[sys.executable,'-c','import sys; p=sys.stdin.read(); print("Veredito: contexto recebido" if p else "")']):

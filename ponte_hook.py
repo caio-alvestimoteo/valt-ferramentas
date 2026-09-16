@@ -44,6 +44,9 @@ ERRO = re.compile(r'error TS\d+[^\n]*|^\s*●[^\n]+|^FAIL\b[^\n]*|^not ok\b[^\n]
 ANUNCIO = re.compile(r'(abrir|iniciar|chamar|disparar|pedir|fazer)\b[^.\n]{0,50}(consulta|parecer)\b[^.\n]{0,50}(claude|codex|consultor|ponte|ptyxis)'
                      r'|consultar (o )?(claude|codex)\b|segunda opini[aã]o (do|ao|com o|pelo) (claude|codex)'
                      r'|(abrir|iniciar|chamar)\b[^.\n]{0,30}(consulta_iniciar|valt-ponte|o consultor)', re.I)
+CONFIG = re.compile(r'\.cursor/(mcp|hooks)\.json')
+ESCRITA = re.compile(r'sed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\brm\b|\btruncate\b|\bchmod\b|\bln\b|open\([^)]*[\'"][wa]|write_text|\bperl\s+-[a-z]*i')
+MATA_PONTE = re.compile(r'\b(p?kill|killall)\b[^;&|]*(ponte|\b\d+\b)')
 FERRAMENTA = re.compile(r'(consulta_iniciar|consulta_status|consulta_cancelar|contexto_valt)$')
 
 def agora():
@@ -355,10 +358,36 @@ def saida_da_entrada(entrada):
 
 # --- eventos --------------------------------------------------------------------------
 
+def processos_da_ponte():
+    saida = subprocess.run(['pgrep', '-f', 'ponte.py (mcp|worker)'], capture_output=True, text=True, timeout=2).stdout
+    return set(saida.split())
+
+def regra_protecao(comando):
+    """A configuração da ponte e seus processos não são do agente: nega escrita e kill."""
+    if CONFIG.search(comando) and ESCRITA.search(comando):
+        return negar('alteração da configuração da ponte barrada',
+                     'O hook da valt-ponte barrou este comando: ~/.cursor/mcp.json e ~/.cursor/hooks.json são mantidos pelo '
+                     'instalador (~/Valt/bootstrap/cursor/ponte-hooks.sh) e não devem ser editados pelo agente. '
+                     'Se a ponte não funciona, relate o erro ao usuário em vez de alterar a configuração.', regra='protecao')
+    alvo = MATA_PONTE.search(comando)
+    if alvo and ('ponte' in alvo.group(0) or set(re.findall(r'\b\d+\b', alvo.group(0))) & processos_da_ponte()):
+        return negar('encerrar processo da ponte barrado',
+                     'O hook da valt-ponte barrou este comando: não encerre o servidor MCP nem o executor da ponte. '
+                     'Se a ponte não responde, relate ao usuário.', regra='protecao')
+    return None
+
+def restaurar_config():
+    instalador = VAULT/'bootstrap/cursor/ponte-hooks.sh'
+    if instalador.is_file():
+        subprocess.run(['bash', str(instalador), 'instalar', '--aplicar'], capture_output=True, timeout=3)
+
 def before_shell(entrada, conversa):
+    comando, pasta = comando_da_entrada(entrada), pasta_da_entrada(entrada)
+    protecao = regra_protecao(comando)
+    if protecao:
+        return protecao
     if conversa.d.get('sem_consulta'):
         return {}
-    comando, pasta = comando_da_entrada(entrada), pasta_da_entrada(entrada)
     return regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta) or {}
 
 def after_tool(entrada, conversa, falhou=False):
@@ -428,6 +457,11 @@ def after_mcp(entrada, conversa):
 
 def after_file_edit(entrada, conversa):
     caminho = entrada.get('file_path') or entrada.get('path')
+    if caminho and CONFIG.search(str(Path(caminho).expanduser())):
+        restaurar_config()
+        conversa.d['config_restaurada_em'] = agora()
+        registrar('hook_restaurou', mensagem=str(caminho).replace(str(Path.home()), '~'))
+        return {}
     if caminho:
         raiz = raiz_git(Path(caminho).expanduser().parent)
         if raiz:
@@ -471,6 +505,9 @@ def retomar(conversa, mensagem, regra):
 def stop(entrada, conversa):
     if conversa.d.get('sem_consulta'):
         return {}
+    if conversa.d.pop('config_restaurada_em', None):
+        return retomar(conversa, 'Você editou a configuração da valt-ponte (~/.cursor/mcp.json ou hooks.json); o hook restaurou a versão '
+                       'do instalador. Não altere essa configuração: se a ponte falhar, relate o erro ao usuário.', 'config')
     voltas = max(int(entrada.get('loop_count') or 0), conversa.d.get('retomadas', 0))
     if voltas >= MAX_RETOMADAS or str(entrada.get('status', 'completed')) not in {'completed', 'complete', 'success'}:
         return {}

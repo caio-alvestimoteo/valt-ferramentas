@@ -318,5 +318,29 @@ class HookTest(unittest.TestCase):
         self.evento('afterAgentResponse', text='O hook exige consulta. Vou abrir a consulta ao Claude pela valt-ponte.')
         self.assertIn('followup_message', self.evento('stop', status='completed', loop_count=0))
 
+    # --- proteção da configuração (agente editou mcp.json e matou o MCP no teste real)
+    def test_shell_nao_edita_config(self):
+        for c in ['sed -i "s/a/b/" ~/.cursor/mcp.json', 'jq . x > ~/.cursor/hooks.json', 'cp /tmp/x ~/.cursor/mcp.json',
+                  'python3 -c "open(\'/h/.cursor/mcp.json\',\'w\')"']:
+            self.assertEqual(self.shell(c)['permission'], 'deny', c)
+    def test_shell_le_config_livre(self):
+        for c in ['cat ~/.cursor/mcp.json', 'jq . ~/.cursor/hooks.json', 'grep valt ~/.cursor/mcp.json']:
+            self.assertEqual(self.shell(c), {}, c)
+    def test_nao_mata_processo_da_ponte(self):
+        self.assertEqual(self.shell('pkill -f "ponte.py mcp"')['permission'], 'deny')
+        with patch.object(hook, 'processos_da_ponte', return_value={'4242'}):
+            self.assertEqual(self.shell('kill 4242 2>/dev/null; sleep 1')['permission'], 'deny')
+            self.assertEqual(self.shell('kill 999'), {})
+    def test_protecao_vale_com_sem_consulta(self):
+        self.evento('beforeSubmitPrompt', prompt='#sem-consulta')
+        self.assertEqual(self.shell('sed -i x ~/.cursor/mcp.json')['permission'], 'deny')
+    def test_edicao_da_config_restaura_e_avisa(self):
+        with patch.object(hook, 'restaurar_config') as restaura:
+            self.evento('afterFileEdit', file_path=str(Path.home()/'.cursor/mcp.json'))
+            restaura.assert_called_once()
+        r = self.evento('stop', status='completed', loop_count=0)
+        self.assertIn('restaurou', r['followup_message'])
+        self.assertEqual(self.chamadas()[-2]['ferramenta'], 'hook_restaurou')
+
 if __name__ == '__main__':
     unittest.main()

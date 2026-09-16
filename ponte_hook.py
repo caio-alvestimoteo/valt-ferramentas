@@ -36,7 +36,9 @@ LIMITE_ARQUIVOS = 20
 
 SENSIVEL = re.compile(r'auth\.|\bgrant\b|\bpolicy\b|security\s+definer|e-?mail|telefone|phone|avatar|foto|'
                       r'\bnome\b|full_name|first_name|last_name|\bcpf\b', re.I)
-COMMIT = re.compile(r'(^|[;&|]\s*|\s)git(\s+-C\s+\S+)?\s+commit\b')
+GIT_OPCOES = r'(?:\s+(?:-C|-c|--git-dir|--work-tree)\s+(?:"[^"]*"|\'[^\']*\'|\S+)|\s+--?[\w-]+(?:=\S+)?)*'
+COMMIT = re.compile(r'(?:^|[\s;&|({])git'+GIT_OPCOES+r'\s+commit\b')
+ADD = re.compile(r'(?:^|[\s;&|({])git'+GIT_OPCOES+r'\s+add\b(.*)')
 COMMIT_TUDO = re.compile(r'\s-[a-zA-Z]*a[a-zA-Z]*\b|\s--all\b')
 DB_PUSH = re.compile(r'\bsupabase\s+db\s+push\b|\bpsql\b.*(postgres(ql)?://|\s-h\s)')
 TESTE = re.compile(r'\b(tsc|jest|vitest|pg_prove|pgtap)\b|supabase\s+test\b|\bnpm\s+(run\s+)?test\b|\bnpx\s+(tsc|jest|vitest)\b')
@@ -196,11 +198,33 @@ def alterados_no_disco(raiz, prefixo=''):
     novos = git(raiz, 'ls-files', '--others', '--exclude-standard', '--', prefixo or '.') or ''
     return [n for n in (modificados+'\n'+novos).split('\n') if n]
 
+def trechos(comando):
+    """Quebra o comando em trechos simples: desembrulha `bash -c "…"`, subshell `( )` e bloco `{ }`."""
+    comando = str(comando)
+    for _ in range(3):
+        interno = re.search(r'\b(?:ba|z)?sh\s+-l?c\s+("(?:[^"\\]|\\.)*"|\'[^\']*\')', comando)
+        if not interno:
+            break
+        corpo = interno.group(1)[1:-1].replace('\\"', '"')
+        comando = comando[:interno.start()] + ' ; ' + corpo + ' ; ' + comando[interno.end():]
+    for trecho in re.split(r'&&|\|\||;|\||\n', comando):
+        trecho = trecho.strip().lstrip('({').rstrip(')}').strip()
+        trecho = re.sub(r'^(?:\w+=(?:"[^"]*"|\'[^\']*\'|\S+)\s+)+', '', trecho)  # VAR=x git …
+        if trecho:
+            yield trecho
+
+def caminho_do_git(trecho, atual):
+    via_c = re.search(r'\bgit\b[^;&|]*?\s-C\s+("[^"]+"|\'[^\']+\'|\S+)', trecho)
+    if not via_c:
+        return atual
+    destino = Path(os.path.expanduser(via_c.group(1).strip('"\'')))
+    return destino if destino.is_absolute() or atual is None else (atual/destino)
+
 def adicionados_no_comando(raiz, comando, pasta):
     """Arquivos que um `git add` no mesmo comando vai colocar no stage antes do commit."""
     nomes = []
-    for trecho in re.split(r'&&|\|\||;|\n', comando):
-        m = re.search(r'\bgit(?:\s+-C\s+\S+)?\s+add\b(.*)', trecho)
+    for trecho in trechos(comando):
+        m = ADD.search(trecho)
         if not m:
             continue
         args = [a.strip('"\'') for a in m.group(1).split()]
@@ -234,21 +258,16 @@ def conteudo_stage(raiz, caminho):
     return blob
 
 def diretorio_efetivo(comando, pasta, alvo):
-    """Pasta onde roda o trecho do comando que casa com `alvo`, seguindo `cd X &&` e `git -C X`."""
+    """Pasta onde roda o trecho do comando que casa com `alvo`, seguindo `cd X`, `git -C X` e subshells."""
     atual = Path(pasta).expanduser() if pasta else None
-    for trecho in re.split(r'&&|\|\||;|\n', comando):
-        trecho = trecho.strip()
+    for trecho in trechos(comando):
         mudanca = re.match(r'^(?:cd|pushd)\s+("[^"]+"|\'[^\']+\'|\S+)\s*$', trecho)
         if mudanca:
             destino = Path(os.path.expanduser(mudanca.group(1).strip('"\'')))
             atual = destino if destino.is_absolute() or atual is None else (atual/destino)
             continue
         if alvo.search(' '+trecho):
-            via_c = re.search(r'\bgit\s+-C\s+("[^"]+"|\'[^\']+\'|\S+)', trecho)
-            if via_c:
-                destino = Path(os.path.expanduser(via_c.group(1).strip('"\'')))
-                return destino if destino.is_absolute() or atual is None else (atual/destino)
-            return atual
+            return caminho_do_git(trecho, atual)
     return atual
 
 def regra_migracao(entrada, comando, pasta):
@@ -376,6 +395,43 @@ def regra_protecao(comando):
                      'Se a ponte não responde, relate ao usuário.', regra='protecao')
     return None
 
+FERRAMENTAS_LEITURA = {'read', 'read_file', 'grep', 'glob', 'ls', 'list_dir', 'codebase_search', 'semanticsearch', 'fetch'}
+
+def caminhos(valor, chave=''):
+    """Só valores de campos de caminho (path, file_path, target_file…): o conteúdo escrito não conta."""
+    if isinstance(valor, str):
+        if re.search(r'path|file|target|uri|dest', chave, re.I):
+            yield valor
+    elif isinstance(valor, dict):
+        for nome, item in valor.items():
+            yield from caminhos(item, str(nome))
+    elif isinstance(valor, list):
+        for item in valor:
+            yield from caminhos(item, chave)
+
+def pre_tool(entrada, conversa):
+    nome = str(entrada.get('tool_name') or '')
+    if not conversa.d.get('pre_tool_visto'):
+        # Primeira entrada real registrada para conferir o contrato (sem conteúdo, só forma).
+        entrada_ferramenta = entrada.get('tool_input')
+        chaves = sorted(entrada_ferramenta) if isinstance(entrada_ferramenta, dict) else type(entrada_ferramenta).__name__
+        log(f'preToolUse visto: tool_name={nome!r} tool_input={chaves}')
+        conversa.d['pre_tool_visto'] = True
+    if nome.lower() in FERRAMENTAS_LEITURA or nome.startswith('MCP:') or nome == 'Shell':
+        return {}
+    ferramenta = entrada.get('tool_input')
+    if isinstance(ferramenta, str):
+        try:
+            ferramenta = json.loads(ferramenta)
+        except ValueError:
+            pass
+    if any(CONFIG.search(texto) for texto in caminhos(ferramenta)):
+        registrar('hook_negou', mensagem=f'edição da configuração da ponte barrada ({nome})', regra='protecao')
+        aviso = ('valt-ponte: edição barrada — ~/.cursor/mcp.json e ~/.cursor/hooks.json são mantidos pelo instalador '
+                 '(~/Valt/bootstrap/cursor/ponte-hooks.sh). Não altere essa configuração; se a ponte falhar, relate o erro ao usuário.')
+        return {'permission': 'deny', 'user_message': aviso, 'agent_message': aviso}
+    return {}
+
 def restaurar_config():
     instalador = VAULT/'bootstrap/cursor/ponte-hooks.sh'
     if instalador.is_file():
@@ -433,6 +489,13 @@ def after_tool(entrada, conversa, falhou=False):
         info['segunda_em'] = agora()
     arquivos = re.findall(r'([\w./-]+\.(?:ts|tsx|js|jsx|sql|py))[:(]', saida)
     info['arquivos'] = list(dict.fromkeys(info.get('arquivos', []) + arquivos))[:6]
+    if info['vezes'] == 2:
+        raiz, repo_rel, projeto = mapeado
+        return {'additional_context': f'valt-ponte: o mesmo erro de {tipo} apareceu 2 vezes ({assinatura}). A próxima execução '
+                'será barrada até haver consulta. Consulte agora. '
+                + chamada_pronta(projeto, repo_rel, info['arquivos'],
+                                 f'O mesmo erro de {tipo} apareceu duas vezes: {assinatura}. Qual a causa raiz e a correção?',
+                                 repo_rel+'|'+assinatura+'|'+str(info['segunda_em']))}
     return {}
 
 def nome_ferramenta(entrada):
@@ -477,6 +540,13 @@ def after_response(entrada, conversa):
         conversa.d['anunciou_em'] = agora()
     return {}
 
+IDIOMA = ('Responda, narre, comente e nomeie tarefas sempre em português do Brasil, inclusive títulos e prompts '
+          'de subagentes, mensagens de commit e notas. Identificadores, comandos, flags, nomes de arquivo e saída de '
+          'ferramentas ficam como estão.')
+LEMBRETE = ('valt-ponte: para segunda opinião chame consulta_iniciar (provedor claude, modo investigador, interativo false) '
+            'e consulta_status até o estado final no mesmo turno — anunciar não conta. Se um comando for negado pelo hook '
+            'da valt-ponte, faça a consulta indicada na mensagem e não altere ~/.cursor/mcp.json nem hooks.json.')
+
 def before_prompt(entrada, conversa):
     texto = str(entrada.get('prompt') or entrada.get('text') or '')
     if '#sem-consulta' in texto:
@@ -485,7 +555,7 @@ def before_prompt(entrada, conversa):
     conversa.d.pop('anunciou_em', None)
     conversa.d['turno_em'] = agora()
     conversa.d['retomadas'] = 0
-    return {'continue': True}
+    return {'continue': True, 'additional_context': IDIOMA+'\n'+LEMBRETE}
 
 def consulta_ativa(conversa):
     for id_consulta in conversa.d['consultas']:
@@ -538,7 +608,7 @@ def stop(entrada, conversa):
                                         repo_rel+'|'+str(len(arquivos))), 'revisao_final')
     return {}
 
-EVENTOS = {'beforeShellExecution': before_shell, 'postToolUse': after_tool,
+EVENTOS = {'preToolUse': pre_tool, 'beforeShellExecution': before_shell, 'postToolUse': after_tool,
            'postToolUseFailure': lambda entrada, conversa: after_tool(entrada, conversa, falhou=True), 'afterMCPExecution': after_mcp, 'afterFileEdit': after_file_edit,
            'afterAgentResponse': after_response, 'beforeSubmitPrompt': before_prompt, 'stop': stop}
 

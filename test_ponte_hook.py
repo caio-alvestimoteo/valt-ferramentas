@@ -188,7 +188,7 @@ class HookTest(unittest.TestCase):
     # --- saídas de emergência e segurança
     def test_sem_consulta_libera_na_conversa(self):
         self.stage_migracao()
-        self.assertEqual(self.evento('beforeSubmitPrompt', prompt='commita #sem-consulta'), {'continue': True})
+        self.assertTrue(self.evento('beforeSubmitPrompt', prompt='commita #sem-consulta')['continue'])
         self.assertEqual(self.shell('git commit -m x'), {})
         self.assertEqual(self.evento('beforeShellExecution', conversation_id='c2', command='git commit -m x', cwd=str(self.repo))['permission'], 'deny')
     def test_arquivo_desligado_libera_tudo(self):
@@ -250,7 +250,8 @@ class HookTest(unittest.TestCase):
         hook.processar('afterAgentResponse', json.dumps(resposta))
         self.assertIn('followup_message', hook.processar('stop', json.dumps(self.fixtures('stop')[0])))
     def test_fixture_prompt_continua(self):
-        self.assertEqual(hook.processar('beforeSubmitPrompt', json.dumps(self.fixtures('beforeSubmitPrompt')[0])), {'continue': True})
+        r = hook.processar('beforeSubmitPrompt', json.dumps(self.fixtures('beforeSubmitPrompt')[0]))
+        self.assertTrue(r['continue']); self.assertIn('additional_context', r)
 
     # --- reavaliação: brechas encontradas
     def test_commit_com_cd_a_partir_de_outra_pasta(self):
@@ -341,6 +342,41 @@ class HookTest(unittest.TestCase):
         r = self.evento('stop', status='completed', loop_count=0)
         self.assertIn('restaurou', r['followup_message'])
         self.assertEqual(self.chamadas()[-2]['ferramenta'], 'hook_restaurou')
+
+    # --- idioma e lembrete, preToolUse e aviso no 2º erro
+    def test_prompt_injeta_idioma_e_lembrete(self):
+        r = self.evento('beforeSubmitPrompt', prompt='oi')
+        self.assertTrue(r['continue'])
+        self.assertIn('português do Brasil', r['additional_context']); self.assertIn('consulta_iniciar', r['additional_context'])
+    def test_desligado_nao_injeta(self):
+        (self.state/'desligado').touch()
+        self.assertEqual(self.evento('beforeSubmitPrompt', prompt='oi'), {'continue': True})
+    def test_pre_tool_barra_edicao_da_config(self):
+        for nome, entrada in [('Write', {'path': str(Path.home()/'.cursor/mcp.json'), 'contents': '{}'}),
+                              ('StrReplace', {'file_path': '~/.cursor/hooks.json', 'old_string': 'a', 'new_string': 'b'}),
+                              ('Edit', {'target_file': str(Path.home()/'.cursor/mcp.json')})]:
+            r = self.evento('preToolUse', tool_name=nome, tool_input=entrada)
+            self.assertEqual(r['permission'], 'deny', nome); self.assertIn('instalador', r['user_message'])
+    def test_pre_tool_libera_leitura_e_outros_arquivos(self):
+        self.assertEqual(self.evento('preToolUse', tool_name='Read', tool_input={'path': str(Path.home()/'.cursor/mcp.json')}), {})
+        self.assertEqual(self.evento('preToolUse', tool_name='Write', tool_input={'path': '/tmp/x.md', 'contents': 'veja ~/.cursor/mcp.json'}), {})
+        self.assertEqual(self.evento('preToolUse', tool_name='Shell', tool_input={'command': 'cat ~/.cursor/mcp.json'}), {})
+    def test_segundo_erro_avisa_com_chamada_pronta(self):
+        self.falha_tsc()
+        r = self.falha_tsc()
+        self.assertIn('A próxima execução será barrada', r['additional_context']); self.assertIn('consulta_iniciar', r['additional_context'])
+
+    # --- formas alternativas de commit (revisão)
+    def test_formas_alternativas_de_commit(self):
+        self.stage_migracao()
+        r = str(self.repo)
+        for c in [f'(cd {r}; git commit -m x)', f'{{ cd {r} && git commit -m x; }}', f'bash -c "cd {r} && git commit -m x"',
+                  f"sh -c 'cd {r} && git commit -m x'", f'cd {r} && git --no-pager commit -m x', f'cd {r} && git -c user.name=x commit -m x',
+                  f'cd {r} && GIT_AUTHOR_NAME=x git commit -m x', f'git -C {r} -c core.pager=cat commit -m x', f'cd {r} && git status | cat && git commit -m x']:
+            self.assertEqual(self.evento('beforeShellExecution', command=c, cwd=str(self.v))['permission'], 'deny', c)
+    def test_commit_citado_em_texto_nao_confunde(self):
+        self.stage_migracao()
+        self.assertEqual(self.evento('beforeShellExecution', command=f'cd {self.repo} && git log --grep="git commit"', cwd=str(self.v)), {})
 
 if __name__ == '__main__':
     unittest.main()

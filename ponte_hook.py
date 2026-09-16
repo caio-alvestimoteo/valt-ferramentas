@@ -293,7 +293,7 @@ def comando_da_entrada(entrada):
 
 def saida_da_entrada(entrada):
     partes = []
-    for chave in ('output', 'stdout', 'stderr', 'tool_output', 'result', 'error', 'error_message'):
+    for chave in ('output', 'stdout', 'stderr', 'result', 'error', 'error_message'):
         valor = entrada.get(chave)
         if isinstance(valor, (dict, list)):
             valor = json.dumps(valor, ensure_ascii=False)
@@ -309,20 +309,47 @@ def before_shell(entrada, conversa):
     comando, pasta = comando_da_entrada(entrada), pasta_da_entrada(entrada)
     return regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta) or {}
 
-def after_shell(entrada, conversa):
+def after_tool(entrada, conversa, falhou=False):
+    """postToolUse/postToolUseFailure do Shell: conta a 1ª linha de erro de tsc/Jest/Vitest/pgTAP.
+
+    afterShellExecution não serve: não traz cwd e dispara junto com postToolUse (contaria em dobro).
+    """
+    if str(entrada.get('tool_name', '')) != 'Shell':
+        return {}
+    id_uso = entrada.get('tool_use_id')
+    vistos = conversa.d.setdefault('usos_contados', [])
+    if id_uso and id_uso in vistos:
+        return {}
     comando = comando_da_entrada(entrada)
     tipo = tipo_teste(comando)
     if not tipo:
         return {}
-    mapeado = repo_mapeado(pasta_da_entrada(entrada))
-    assinatura = assinatura_erro(saida_da_entrada(entrada))
+    saida = saida_da_entrada(entrada)
+    codigo = None
+    bruto = entrada.get('tool_output')
+    if isinstance(bruto, str):
+        try:
+            bruto = json.loads(bruto)
+        except ValueError:
+            bruto = None
+    if isinstance(bruto, dict):
+        saida = str(bruto.get('output', '')) + '\n' + saida
+        codigo = bruto.get('exitCode')
+    if not falhou and codigo in (0, None) and not ERRO.search(saida):
+        return {}
+    ferramenta = entrada.get('tool_input') if isinstance(entrada.get('tool_input'), dict) else {}
+    mapeado = repo_mapeado(Path(entrada.get('cwd') or ferramenta.get('cwd') or '') if (entrada.get('cwd') or ferramenta.get('cwd')) else None)
+    assinatura = assinatura_erro(saida)
     if not mapeado or not assinatura:
         return {}
+    if id_uso:
+        vistos.append(id_uso)
+        del vistos[:-200]
     info = conversa.d['erros'].setdefault(assinatura, {'tipo': tipo, 'repositorio': mapeado[1], 'vezes': 0})
     info['vezes'] += 1
     if info['vezes'] == 2:
         info['segunda_em'] = agora()
-    arquivos = re.findall(r'([\w./-]+\.(?:ts|tsx|js|jsx|sql|py))[:(]', saida_da_entrada(entrada))
+    arquivos = re.findall(r'([\w./-]+\.(?:ts|tsx|js|jsx|sql|py))[:(]', saida)
     info['arquivos'] = list(dict.fromkeys(info.get('arquivos', []) + arquivos))[:6]
     return {}
 
@@ -415,8 +442,8 @@ def stop(entrada, conversa):
                                         repo_rel+'|'+str(len(arquivos))), 'revisao_final')
     return {}
 
-EVENTOS = {'beforeShellExecution': before_shell, 'afterShellExecution': after_shell, 'postToolUse': after_shell,
-           'postToolUseFailure': after_shell, 'afterMCPExecution': after_mcp, 'afterFileEdit': after_file_edit,
+EVENTOS = {'beforeShellExecution': before_shell, 'postToolUse': after_tool,
+           'postToolUseFailure': lambda entrada, conversa: after_tool(entrada, conversa, falhou=True), 'afterMCPExecution': after_mcp, 'afterFileEdit': after_file_edit,
            'afterAgentResponse': after_response, 'beforeSubmitPrompt': before_prompt, 'stop': stop}
 
 def processar(evento, bruto):
@@ -428,7 +455,7 @@ def processar(evento, bruto):
     funcao = EVENTOS.get(evento)
     if not funcao:
         return neutro(evento)
-    if evento in {'postToolUse', 'postToolUseFailure'} and not comando_da_entrada(entrada):
+    if evento in {'postToolUse', 'postToolUseFailure'} and str(entrada.get('tool_name', '')) != 'Shell':
         return {}
     conversa = Conversa(entrada)
     try:

@@ -1,0 +1,318 @@
+{
+ "sessionStart": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "",
+   "model": "cursor-grok-4.6-medium",
+   "model_id": "grok-4.6",
+   "model_params": [
+    {
+     "id": "effort",
+     "value": "medium"
+    },
+    {
+     "id": "fast",
+     "value": "false"
+    }
+   ],
+   "is_background_agent": false,
+   "composer_mode": "agent",
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "sessionStart",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  }
+ ],
+ "beforeSubmitPrompt": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "cursor-grok-4.6-medium",
+   "model_id": "grok-4.6",
+   "model_params": [
+    {
+     "id": "effort",
+     "value": "medium"
+    },
+    {
+     "id": "fast",
+     "value": "false"
+    }
+   ],
+   "composer_mode": "agent",
+   "prompt": "Teste técnico de hooks (não é tarefa real, não edite arquivos). 1) Chame a ferramenta MCP contexto_valt do valt-ponte com projeto Jaiminho e pergunta \"teste de hooks\". 2) No terminal, dentro de ~/Sites/Trabalho/valt-ferramentas, rode: python3 -c \"import sys; print(\"src/x.ts(3,5): error TS2322: teste\"); sys.exit(2)\" 3) Rode git status --short no mesmo diretório. 4) Responda só: fim do teste.",
+   "attachments": [
+    {
+     "type": "rule",
+     "file_path": "Valt (vault)/idioma.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt (vault)/descoberta-projeto.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt (vault)/valt-ponte.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt (vault)/CLAUDE.md"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt (vault)/AGENTS.md"
+    }
+   ],
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "beforeSubmitPrompt",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  }
+ ],
+ "beforeShellExecution": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "command": "python3 -c \"import sys; print(\\\"src/x.ts(3,5): error TS2322: teste\\\"); sys.exit(2)\"",
+   "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+   "sandbox": true,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "beforeShellExecution",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  },
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "command": "git status --short",
+   "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+   "sandbox": true,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "beforeShellExecution",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "afterShellExecution": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "command": "git status --short",
+   "output": "",
+   "duration": 844.968,
+   "sandbox": true,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "afterShellExecution",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  },
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "command": "python3 -c \"import sys; print(\\\"src/x.ts(3,5): error TS2322: teste\\\"); sys.exit(2)\"",
+   "output": "src/x.ts(3,5): error TS2322: teste\n",
+   "duration": 901.981,
+   "sandbox": true,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "afterShellExecution",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "postToolUse": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "tool_name": "Shell",
+   "tool_input": {
+    "command": "git status --short",
+    "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+    "timeout": 30000
+   },
+   "tool_output": "{\"output\":\"\",\"exitCode\":0}",
+   "duration": 844.968,
+   "tool_use_id": "d454059f-95f4-4130-869e-9d909c1e0c4c",
+   "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "postToolUse",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  },
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "tool_name": "MCP:contexto_valt",
+   "tool_input": {
+    "projeto": "Jaiminho",
+    "pergunta": "teste de hooks"
+   },
+   "tool_output": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"projeto\\\": \\\"Jaiminho\\\", \\\"repositorio\\\": \\\"\\\", \\\"pergunta\\\": \\\"teste de hooks\\\", \\\"fontes\\\": [{\\\"arquivo\\\": \\\"Valt/AGENTS.md\\\", \\\"sha256\\\": \\\"3315b4c08e3b56ed3504c67e85b25f12bdd1a9208b7c902069c142442aca7d5f\\\", \\\"truncado\\\": true}, {\\\"arquivo\\\": \\\"Valt/CLAUDE.md\\\", \\\"sha256\\\": \\\"ace472baafcd924eafd058d59aa166f32401800734e7c02eab3ecd452957c458\\\", \\\"truncado\\\": false}, {\\\"arquivo\\\": \\\"Valt/Jaiminho/README.md\\\", \\\"sha256\\\": \\\"89a63c171905c76bf4c9ea3e6badeeb40a412196fbd86efa21fe86c0e77dad0b\\\", \\\"truncado\\\": false}, {\\\"arquivo\\\": \\\"Valt/Jaiminho/Repositorio/map",
+   "duration": 32.697,
+   "tool_use_id": "23f34b8e-b817-4e69-9cb8-e2dd77aad251",
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "postToolUse",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "postToolUseFailure": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "tool_name": "Shell",
+   "tool_input": {
+    "command": "python3 -c \"import sys; print(\\\"src/x.ts(3,5): error TS2322: teste\\\"); sys.exit(2)\"",
+    "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+    "timeout": 30000
+   },
+   "error_message": "src/x.ts(3,5): error TS2322: teste",
+   "failure_type": "error",
+   "duration": 901.981,
+   "tool_use_id": "9edc67ca-5a16-4359-93a2-3e81a87d7bf7",
+   "is_interrupt": false,
+   "cwd": "{HOME}/Sites/Trabalho/valt-ferramentas",
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "postToolUseFailure",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "afterMCPExecution": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "grok-4.6",
+   "tool_name": "contexto_valt",
+   "tool_input": "{\"projeto\":\"Jaiminho\",\"pergunta\":\"teste de hooks\"}",
+   "result_json": "{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"projeto\\\": \\\"Jaiminho\\\", \\\"repositorio\\\": \\\"\\\", \\\"pergunta\\\": \\\"teste de hooks\\\", \\\"fontes\\\": [{\\\"arquivo\\\": \\\"Valt/AGENTS.md\\\", \\\"sha256\\\": \\\"3315b4c08e3b56ed3504c67e85b25f12bdd1a9208b7c902069c142442aca7d5f\\\", \\\"truncado\\\": true}, {\\\"arquivo\\\": \\\"Valt/CLAUDE.md\\\", \\\"sha256\\\": \\\"ace472baafcd924eafd058d59aa166f32401800734e7c02eab3ecd452957c458\\\", \\\"truncado\\\": false}, {\\\"arquivo\\\": \\\"Valt/Jaiminho/README.md\\\", \\\"sha256\\\": \\\"89a63c171905c76bf4c9ea3e6badeeb40a412196fbd86efa21fe86c0e77dad0b\\\", \\\"truncado\\\": false}, {\\\"arquivo\\\": \\\"Valt/Jaiminho/Repositorio/map",
+   "duration": 32.697,
+   "mcp_server_name": "valt-ponte",
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "afterMCPExecution",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "afterAgentResponse": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "cursor-grok-4.6-medium",
+   "model_id": "grok-4.6",
+   "model_params": [
+    {
+     "id": "effort",
+     "value": "medium"
+    },
+    {
+     "id": "fast",
+     "value": "false"
+    }
+   ],
+   "text": "fim do teste",
+   "input_tokens": 90980,
+   "output_tokens": 592,
+   "cache_read_tokens": 56704,
+   "cache_write_tokens": 0,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "afterAgentResponse",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "stop": [
+  {
+   "conversation_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "generation_id": "e57815dd-74aa-41e5-8674-7ed8cb76ca19",
+   "model": "cursor-grok-4.6-medium",
+   "model_id": "grok-4.6",
+   "model_params": [
+    {
+     "id": "effort",
+     "value": "medium"
+    },
+    {
+     "id": "fast",
+     "value": "false"
+    }
+   ],
+   "status": "completed",
+   "loop_count": 0,
+   "input_tokens": 90980,
+   "output_tokens": 592,
+   "cache_read_tokens": 56704,
+   "cache_write_tokens": 0,
+   "session_id": "2a513c1b-6536-4ae8-8822-f11235d7eafa",
+   "hook_event_name": "stop",
+   "cursor_version": "3.18.25",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ]
+}

@@ -114,7 +114,9 @@ class HookTest(unittest.TestCase):
 
     # --- erro repetido
     def falha_tsc(self, erro='src/x.ts(3,5): error TS2322: Type string is not assignable to number.'):
-        return self.evento('afterShellExecution', command='npx tsc --noEmit', cwd=str(self.repo), output=erro+'\nFound 1 error in 0.8s')
+        self.uso = getattr(self, 'uso', 0) + 1
+        return self.evento('postToolUseFailure', tool_name='Shell', tool_use_id=f'u{self.uso}', cwd=str(self.repo),
+                           tool_input={'command': 'npx tsc --noEmit', 'cwd': str(self.repo)}, error_message=erro+'\nFound 1 error in 0.8s')
     def test_terceira_tentativa_com_mesmo_erro_e_negada(self):
         self.assertEqual(self.shell('npx tsc --noEmit'), {})
         self.falha_tsc(); self.assertEqual(self.shell('npx tsc --noEmit'), {})
@@ -134,8 +136,9 @@ class HookTest(unittest.TestCase):
         self.assertEqual(self.evento('beforeShellExecution', conversation_id='c2', command='npx tsc', cwd=str(self.repo)), {})
     def test_post_tool_use_tambem_conta(self):
         for _ in range(2):
-            self.evento('postToolUse', tool_name='Shell', tool_input={'command': 'npx jest', 'cwd': str(self.repo)},
-                        cwd=str(self.repo), tool_output='● soma › retorna 3\n  expect(received).toBe(expected)')
+            self.uso = getattr(self, 'uso', 0) + 1
+            self.evento('postToolUse', tool_name='Shell', tool_use_id=f'j{self.uso}', tool_input={'command': 'npx jest', 'cwd': str(self.repo)},
+                        cwd=str(self.repo), tool_output=json.dumps({'output': '● soma › retorna 3\n  expect(received).toBe(expected)', 'exitCode': 1}))
         self.assertEqual(self.shell('npx jest')['permission'], 'deny')
 
     # --- stop
@@ -205,6 +208,48 @@ class HookTest(unittest.TestCase):
             self.assertEqual(self.rodar_main('beforeShellExecution', json.dumps({'conversation_id': 'c1', 'command': 'git commit', 'cwd': str(self.repo)})), {})
     def test_evento_desconhecido_neutro(self):
         self.assertEqual(self.rodar_main('sessionStart', '{}'), {})
+
+    # --- contrato real (entradas capturadas do Cursor 3.18.25)
+    def fixtures(self, evento):
+        texto = (Path(__file__).parent/'test_ponte_hook_fixtures.json').read_text()
+        texto = texto.replace('{HOME}/Sites/Trabalho/valt-ferramentas', str(self.repo)).replace('{HOME}', self.tmp.name)
+        return json.loads(texto)[evento]
+    def test_fixture_before_shell_campos(self):
+        for entrada in self.fixtures('beforeShellExecution'):
+            self.assertIn('command', entrada); self.assertIn('cwd', entrada); self.assertIn('conversation_id', entrada)
+            self.assertEqual(hook.processar('beforeShellExecution', json.dumps(entrada)), {})
+    def test_fixture_mesmo_uso_nao_conta_duas_vezes(self):
+        falha = self.fixtures('postToolUseFailure')[0]
+        falha['tool_input']['command'] = 'npx tsc --noEmit'
+        for _ in range(3):
+            hook.processar('postToolUseFailure', json.dumps(falha))
+        cid = falha['conversation_id']
+        self.assertEqual(hook.processar('beforeShellExecution', json.dumps({'conversation_id': cid, 'command': 'npx tsc --noEmit', 'cwd': str(self.repo)})), {})
+    def test_fixture_after_shell_nao_conta(self):
+        for entrada in self.fixtures('afterShellExecution'):
+            entrada['command'] = 'npx tsc --noEmit'
+            hook.processar('afterShellExecution', json.dumps(entrada)); hook.processar('afterShellExecution', json.dumps(entrada))
+        cid = entrada['conversation_id']
+        self.assertEqual(hook.processar('beforeShellExecution', json.dumps({'conversation_id': cid, 'command': 'npx tsc --noEmit', 'cwd': str(self.repo)})), {})
+    def test_fixture_post_tool_use_mcp_ignorado(self):
+        for entrada in self.fixtures('postToolUse'):
+            self.assertEqual(hook.processar('postToolUse', json.dumps(entrada)), {})
+    def test_fixture_mcp_iniciar_registra_consulta(self):
+        entrada = self.fixtures('afterMCPExecution')[0]
+        entrada['tool_name'] = 'consulta_iniciar'
+        entrada['result_json'] = json.dumps({'content': [{'type': 'text', 'text': json.dumps({'id': 'd'*32, 'estado': 'abrindo'})}]})
+        hook.processar('afterMCPExecution', json.dumps(entrada))
+        self.put(self.state/('d'*32)/'job.json', json.dumps({'id': 'd'*32, 'estado': 'executando'}))
+        parada = self.fixtures('stop')[0]
+        r = hook.processar('stop', json.dumps(parada))
+        self.assertIn('d'*32, r['followup_message'])
+    def test_fixture_resposta_e_parada(self):
+        resposta = self.fixtures('afterAgentResponse')[0]
+        resposta['text'] = 'Vou montar o contexto e, em seguida, abrir a consulta não interativa ao Claude.'
+        hook.processar('afterAgentResponse', json.dumps(resposta))
+        self.assertIn('followup_message', hook.processar('stop', json.dumps(self.fixtures('stop')[0])))
+    def test_fixture_prompt_continua(self):
+        self.assertEqual(hook.processar('beforeSubmitPrompt', json.dumps(self.fixtures('beforeSubmitPrompt')[0])), {'continue': True})
 
 if __name__ == '__main__':
     unittest.main()

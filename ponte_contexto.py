@@ -14,7 +14,7 @@ SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|g
 LEMBRETE_CONSULTOR = (
     'Gatilhos: migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
     'revisão final com mais de 20 arquivos. Chame consulta_iniciar (provedor: claude, '
-    'interativo: false) e aguarde consulta_status. Task e agents internos do Cursor não '
+    'interativo: false) e aguarde consulta_status no mesmo turno — anunciar não conta. Task e agents internos do Cursor não '
     'substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
     'Layout Editor não é a ponte.'
 )
@@ -58,7 +58,12 @@ def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: st
         raise ValueError('Pergunta obrigatória, até 12000 caracteres')
     scope = inside(vault, projeto)
     if not scope.is_dir() or scope == vault.resolve() or not (scope / 'README.md').is_file():
-        raise ValueError('Projeto deve ser uma pasta do Valt com README.md')
+        pai = scope.parent
+        while pai != vault.resolve() and pai.is_relative_to(vault.resolve()) and not (pai / 'README.md').is_file():
+            pai = pai.parent
+        dica = (f"; use projeto '{pai.relative_to(vault.resolve()).as_posix()}'"
+                if pai != vault.resolve() and pai.is_relative_to(vault.resolve()) else '')
+        raise ValueError('Projeto deve ser uma pasta do Valt com README.md'+dica)
     if set(Path(projeto).parts) & DENIED:
         raise ValueError('Projeto excluído')
     repo_path = inside(sites, repositorio) if repositorio else None

@@ -26,7 +26,6 @@ class PonteTest(unittest.TestCase):
         self.put(self.v/'Seara/continuidade/dataehoradaultimaatualizacao.md','## Hoje\nPrimor errado\n## Ontem\nFood login corrigido')
         self.patches=[patch.object(ponte,'VAULT',self.v),patch.object(ponte,'SITES',self.s),patch.object(ponte,'STATE',self.root/'state')]
         for p in self.patches:p.start()
-        ponte.OWNED.clear()
     def tearDown(self):
         for p in self.patches:p.stop()
         self.tmp.cleanup()
@@ -36,7 +35,7 @@ class PonteTest(unittest.TestCase):
         return ctx.build(self.v,self.s,'Seara/Food',q,**kw)
     def create_job(self,**updates):
         jid='a'*32
-        data={'id':jid,'estado':'executando','provedor':'claude','pacote':self.build(),'prazo':time.time()+60,'interativo':False}
+        data={'id':jid,'estado':'executando','provedor':'claude','pacote':self.build(),'prazo':time.time()+60,'criada':time.time(),'interativo':False}
         data.update(updates);ponte.write(ponte.job_path(jid)/'job.json',data)
         return jid
     def chamadas(self):
@@ -210,5 +209,110 @@ class PonteTest(unittest.TestCase):
             def isatty(self): return True
         with patch.object(sys,'stdin',Tty('')),patch('builtins.input',side_effect=EOFError):
             ponte.segurar_janela()  # tty fechado: não explode
+
+    # --- F1: robustez
+    def abrir(self,projeto='Seara/Food',pedido='r1',**kw):
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen'):
+            return ponte.start(projeto,'login','claude',id_pedido=pedido,**kw)
+    def test_saida_do_mcp_nao_cancela_consulta(self):
+        self.assertFalse(hasattr(ponte,'OWNED'))
+        codigo=Path(ponte.__file__).read_text()
+        self.assertNotIn("estado='cancelada',erro='Sessão MCP encerrada'",codigo)
+    def test_abrindo_sem_executor_falha_em_60s(self):
+        jid=self.create_job(estado='abrindo',criada=time.time()-61)
+        resposta=ponte.status(jid)
+        self.assertEqual(resposta['estado'],'falhou');self.assertIn('60 s',resposta['erro'])
+    def test_abrindo_preso_nao_trava_nova_consulta(self):
+        self.create_job(estado='abrindo',criada=time.time()-61)
+        self.assertEqual(self.abrir(pedido='r2')['estado'],'abrindo')
+    def test_trava_por_projeto(self):
+        self.put(self.v/'Jaiminho/README.md','Jaiminho')
+        self.abrir()
+        self.assertEqual(self.abrir('Jaiminho','r-outro')['estado'],'abrindo')
+        with self.assertRaises(ValueError) as cm:self.abrir(pedido='r3')
+        self.assertIn('Seara/Food',str(cm.exception))
+    def test_interativo_e_modo_padrao(self):
+        job=ponte.read_job(self.abrir()['id'])
+        self.assertFalse(job['interativo']);self.assertEqual(job['modo'],'investigador')
+        props=ponte.TOOLS[1]['inputSchema']['properties']
+        self.assertFalse(props['interativo']['default']);self.assertEqual(props['modo']['default'],'investigador')
+    def test_log_guarda_id_da_consulta_iniciada(self):
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen'):
+            data=ponte.dispatch('consulta_iniciar',{'projeto':'Seara/Food','pergunta':'login','provedor':'claude','id_pedido':'r9'})
+        linha=self.chamadas()[-1]
+        self.assertEqual(linha['id_consulta'],data['id'][:8]);self.assertEqual(linha['estado'],'abrindo')
+        self.assertEqual(linha['provedor'],'claude')
+    def test_executor_registra_inicio_e_fim(self):
+        jid=self.create_job(estado='abrindo')
+        with patch('ponte.provider_command',return_value=[sys.executable,'-c','print("Veredito: ok")']):ponte.worker(jid)
+        eventos=[l['ferramenta'] for l in self.chamadas()]
+        self.assertEqual(eventos,['executor_inicio','executor_fim'])
+        self.assertEqual(self.chamadas()[-1]['estado'],'concluida')
+    def test_erro_de_projeto_sugere_pasta_pai(self):
+        (self.project/'sem-readme').mkdir()
+        with self.assertRaises(ValueError) as cm:ctx.build(self.v,self.s,'Seara/Food/sem-readme','login')
+        self.assertIn("use projeto 'Seara/Food'",str(cm.exception))
+    def test_initialize_tem_instrucoes(self):
+        output=io.StringIO()
+        with patch.object(sys,'stdin',io.StringIO(json.dumps({'jsonrpc':'2.0','id':1,'method':'initialize','params':{}}))),patch.object(sys,'stdout',output):ponte.serve()
+        self.assertIn('Anunciar a consulta não conta',json.loads(output.getvalue())['result']['instructions'])
+    def test_contexto_resumido_por_padrao(self):
+        resumo=ponte.dispatch('contexto_valt',{'projeto':'Seara/Food','pergunta':'login'})
+        self.assertNotIn('texto',resumo);self.assertIn('texto_omitido',resumo);self.assertTrue(resumo['fontes'])
+        completo=ponte.dispatch('contexto_valt',{'projeto':'Seara/Food','pergunta':'login','completo':True})
+        self.assertIn('login.md',completo['texto'])
+
+    # --- F2: investigador
+    def test_comando_investigador_claude_so_leitura(self):
+        cmd=ponte.provider_command('claude','investigador',Path('/r'),Path('/v/p'),Path('/s'))
+        self.assertEqual(cmd[cmd.index('--tools')+1],'Read,Grep,Glob')
+        self.assertIn('--restricted',cmd);self.assertIn('--strict-mcp-config',cmd)
+        self.assertEqual(cmd[cmd.index('--add-dir')+1],'/v/p')
+        self.assertNotIn('Bash',' '.join(cmd))
+    def test_comando_investigador_codex_sandbox(self):
+        cmd=ponte.provider_command('codex','investigador',Path('/r'),Path('/v/p'),Path('/s/parecer.md'))
+        self.assertEqual(cmd[cmd.index('--sandbox')+1],'read-only')
+        self.assertEqual(cmd[cmd.index('-C')+1],'/r');self.assertEqual(cmd[cmd.index('-o')+1],'/s/parecer.md')
+        self.assertNotIn('danger',' '.join(cmd))
+    def test_leitor_claude(self):
+        leitor=ponte.Leitor('claude','investigador',time.monotonic())
+        eventos=[{'type':'assistant','message':{'content':[{'type':'tool_use','name':'Read','input':{'file_path':'/r/a.sql'}}]}},
+                 {'type':'assistant','message':{'content':[{'type':'tool_use','name':'Grep','input':{'pattern':'auth.users'}}]}},
+                 {'type':'result','result':'Veredito: ok','is_error':False}]
+        with patch('builtins.print'):
+            for e in eventos:leitor.linha((json.dumps(e)+'\n').encode())
+        self.assertEqual(leitor.resultado,'Veredito: ok');self.assertEqual(leitor.lidos,['/r/a.sql'])
+    def test_leitor_codex(self):
+        leitor=ponte.Leitor('codex','investigador',time.monotonic())
+        with patch('builtins.print') as saida:
+            leitor.linha(json.dumps({'type':'item.started','item':{'type':'command_execution','command':"/bin/bash -lc 'rg auth'"}}).encode())
+        self.assertIn('rodando rg auth',saida.call_args.args[0]);self.assertEqual(len(leitor.lidos),1)
+    def test_prompt_investigador(self):
+        self.put(self.s/'Seara/food/main.py','print(1)')
+        jid=self.create_job(modo='investigador',arquivos=['main.py'],pacote=self.build(repositorio='Seara/food',arquivos=['main.py']))
+        prompt=ponte.prompt_inicial(ponte.read_job(jid))
+        self.assertIn('SÓ LENDO',prompt);self.assertIn('- main.py',prompt)
+        self.assertIn(str(self.project/'login.md'),prompt);self.assertIn('arquivo:linha',prompt)
+        self.assertNotIn('Login exige email',prompt)  # notas vão por caminho, não por texto
+    def test_investigador_ponta_a_ponta(self):
+        jid=self.create_job(estado='abrindo',modo='investigador')
+        fluxo=[{'type':'assistant','message':{'content':[{'type':'tool_use','name':'Read','input':{'file_path':'login.md'}}]}},
+               {'type':'result','result':'Veredito: investigado','is_error':False}]
+        script='import sys,json; sys.stdin.read(); ['+','.join(f'print({json.dumps(json.dumps(e))})' for e in fluxo)+']'
+        with patch('ponte.provider_command',return_value=[sys.executable,'-c',script]),patch('builtins.print'):ponte.worker(jid)
+        resposta=ponte.status(jid)
+        self.assertEqual(resposta['estado'],'concluida');self.assertEqual(resposta['parecer'],'Veredito: investigado')
+        registro=(self.project/'consultas'/f'{jid}.md').read_text()
+        self.assertIn('Arquivos lidos pelo consultor',registro);self.assertIn('login.md',registro)
+    def test_registro_sem_nome_de_usuario(self):
+        jid=self.create_job(modo='investigador')
+        ponte.finish(jid,'ok',[str(Path.home()/'Sites/x/a.py')])
+        registro=(self.project/'consultas'/f'{jid}.md').read_text()
+        self.assertIn('~/Sites/x/a.py',registro);self.assertNotIn(str(Path.home()),registro)
+    def test_investigador_resultado_com_erro(self):
+        jid=self.create_job(estado='abrindo',modo='investigador')
+        script='import sys,json; sys.stdin.read(); print(json.dumps({"type":"result","result":"usage limit reached","is_error":True}))'
+        with patch('ponte.provider_command',return_value=[sys.executable,'-c',script]),patch('builtins.print'):ponte.worker(jid)
+        self.assertIn('Cota',ponte.status(jid)['erro'])
 
 if __name__=='__main__':unittest.main()

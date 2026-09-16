@@ -217,7 +217,7 @@ class Leitor:
 
     def mostrar(self, texto):
         self.ultima = time.monotonic()
-        print(f'[{int(time.monotonic()-self.inicio):>3} s] {texto}', flush=True)
+        print(f'[{int(time.monotonic()-self.inicio):>3} s] {texto.replace(str(Path.home()), "~")}', flush=True)
 
     def linha(self, bruta):
         texto = bruta.decode('utf-8', errors='replace')

@@ -60,6 +60,7 @@ class HookTest(unittest.TestCase):
         r = self.shell('git commit -m "aulas"')
         self.assertEqual(r['permission'], 'deny')
         self.assertIn('consulta_iniciar', r['agent_message'])
+        self.assertIn('consulta_iniciar', r['user_message'])  # o Cursor só repassa user_message ao agente
         chamada = json.loads(r['agent_message'].split('argumentos:\n')[1].split('\n')[0])
         self.assertEqual(chamada['arquivos'], ['supabase/migrations/001_aulas.sql'])
         self.assertEqual(chamada['projeto'], 'Pessoais/lab'); self.assertEqual(chamada['repositorio'], 'Pessoais/lab')
@@ -310,6 +311,12 @@ class HookTest(unittest.TestCase):
         nome, _ = self.stage_migracao('create table agenda.salas (id int);\n'); self.git('commit', '-qm', 'base')
         self.put(self.repo/nome, MIGRACAO)
         self.assertEqual(self.shell(f'git add {nome} && git commit -m muda')['permission'], 'deny')
+
+    def test_chamada_mcp_com_erro_nao_conta_como_chamada(self):
+        self.evento('beforeSubmitPrompt', prompt='commita')
+        self.evento('afterMCPExecution', tool_name='valt-ponte-consulta_iniciar', result_json=json.dumps({'error': 'MCP server does not exist: valt-ponte'}))
+        self.evento('afterAgentResponse', text='O hook exige consulta. Vou abrir a consulta ao Claude pela valt-ponte.')
+        self.assertIn('followup_message', self.evento('stop', status='completed', loop_count=0))
 
 if __name__ == '__main__':
     unittest.main()

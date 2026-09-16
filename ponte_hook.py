@@ -182,7 +182,8 @@ def chamada_pronta(projeto, repo_rel, arquivos, pergunta, semente):
 
 def negar(motivo_usuario, mensagem_agente, **log_campos):
     registrar('hook_negou', mensagem=motivo_usuario[:200], **log_campos)
-    return {'permission': 'deny', 'user_message': 'valt-ponte: '+motivo_usuario,
+    # O Cursor 3.18 só repassa user_message ao agente (visto no cursor-agent); a instrução vai nos dois.
+    return {'permission': 'deny', 'user_message': 'valt-ponte: '+mensagem_agente,
             'agent_message': mensagem_agente}
 
 # --- regras ---------------------------------------------------------------------------
@@ -416,10 +417,12 @@ def after_mcp(entrada, conversa):
         return {}
     resultado = entrada.get('result_json') or entrada.get('result') or entrada.get('tool_output') or ''
     texto = resultado if isinstance(resultado, str) else json.dumps(resultado, ensure_ascii=False)
-    for id_consulta in set(re.findall(r'\b[a-f0-9]{32}\b', texto)):
+    ids = set(re.findall(r'\b[a-f0-9]{32}\b', texto))
+    for id_consulta in ids:
         estado = re.search(r'"estado"\s*:\s*\\?"(\w+)', texto)
         conversa.d['consultas'][id_consulta] = {'estado': estado.group(1) if estado else '?', 'em': agora()}
-    if nome == 'consulta_iniciar':
+    # Só conta como chamada se a consulta existiu de fato (erro de MCP não devolve id).
+    if nome == 'consulta_iniciar' and ids:
         conversa.d['chamou_em'] = agora()
     return {}
 

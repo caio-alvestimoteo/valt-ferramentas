@@ -286,5 +286,30 @@ class HookTest(unittest.TestCase):
         self.evento('afterAgentResponse', text='Vou abrir a consulta ao Claude.')
         self.assertIn('followup_message', self.evento('stop', status='completed', loop_count=0))
 
+    # --- git add no mesmo comando do commit (padrão real do Cursor)
+    def test_add_e_commit_no_mesmo_comando(self):
+        self.put(self.repo/'supabase/migrations/002_x.sql', MIGRACAO)
+        r = self.shell('git add supabase/migrations/002_x.sql && git commit -m "x" && git status')
+        self.assertEqual(r['permission'], 'deny')
+    def test_add_ponto_e_commit(self):
+        self.put(self.repo/'supabase/migrations/002_x.sql', MIGRACAO)
+        self.assertEqual(self.shell('git add . && git commit -m x')['permission'], 'deny')
+    def test_add_pasta_e_commit_a_partir_de_outra_pasta(self):
+        self.put(self.repo/'supabase/migrations/002_x.sql', MIGRACAO)
+        r = self.evento('beforeShellExecution', command=f'cd {self.repo} && git add supabase && git commit -m x', cwd=str(self.v))
+        self.assertEqual(r['permission'], 'deny')
+    def test_add_de_arquivo_inocente_e_commit_passa(self):
+        self.put(self.repo/'app.ts', 'export const y = 2')
+        self.assertEqual(self.shell('git add app.ts && git commit -m y'), {})
+    def test_add_versao_consultada_passa(self):
+        self.put(self.repo/'supabase/migrations/002_x.sql', MIGRACAO)
+        sha = hashlib.sha256(MIGRACAO.encode()).hexdigest()
+        self.job(fontes=[{'arquivo': 'Sites/Pessoais/lab/supabase/migrations/002_x.sql', 'sha256': sha}])
+        self.assertEqual(self.shell('git add supabase/migrations/002_x.sql && git commit -m x'), {})
+    def test_add_de_arquivo_ja_commitado_modificado(self):
+        nome, _ = self.stage_migracao('create table agenda.salas (id int);\n'); self.git('commit', '-qm', 'base')
+        self.put(self.repo/nome, MIGRACAO)
+        self.assertEqual(self.shell(f'git add {nome} && git commit -m muda')['permission'], 'deny')
+
 if __name__ == '__main__':
     unittest.main()

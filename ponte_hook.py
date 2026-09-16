@@ -187,11 +187,41 @@ def negar(motivo_usuario, mensagem_agente, **log_campos):
 
 # --- regras ---------------------------------------------------------------------------
 
-def arquivos_do_commit(raiz, comando):
+def alterados_no_disco(raiz, prefixo=''):
+    modificados = (git(raiz, 'diff', '--name-only', 'HEAD', '--', prefixo or '.') or git(raiz, 'diff', '--name-only', '--', prefixo or '.') or '')
+    novos = git(raiz, 'ls-files', '--others', '--exclude-standard', '--', prefixo or '.') or ''
+    return [n for n in (modificados+'\n'+novos).split('\n') if n]
+
+def adicionados_no_comando(raiz, comando, pasta):
+    """Arquivos que um `git add` no mesmo comando vai colocar no stage antes do commit."""
+    nomes = []
+    for trecho in re.split(r'&&|\|\||;|\n', comando):
+        m = re.search(r'\bgit(?:\s+-C\s+\S+)?\s+add\b(.*)', trecho)
+        if not m:
+            continue
+        args = [a.strip('"\'') for a in m.group(1).split()]
+        if not args or any(a in {'-A', '--all', '.', '-u', '--update', ':/'} for a in args):
+            nomes += alterados_no_disco(raiz)
+            continue
+        base = Path(pasta) if pasta else raiz
+        for arg in args:
+            if arg.startswith('-'):
+                continue
+            alvo = (base/os.path.expanduser(arg)).resolve() if not Path(os.path.expanduser(arg)).is_absolute() else Path(os.path.expanduser(arg)).resolve()
+            try:
+                rel = alvo.relative_to(raiz).as_posix()
+            except ValueError:
+                continue
+            nomes += alterados_no_disco(raiz, rel) if alvo.is_dir() else [rel]
+    return list(dict.fromkeys(nomes))
+
+def arquivos_do_commit(raiz, comando, pasta=None):
+    """(nomes, lidos_do_disco): o que o commit vai levar, incluindo `git add` no mesmo comando."""
     nomes = (git(raiz, 'diff', '--cached', '--name-only') or '').split('\n')
+    do_disco = set(adicionados_no_comando(raiz, comando, pasta))
     if COMMIT_TUDO.search(comando):
-        nomes += (git(raiz, 'diff', '--name-only') or '').split('\n')
-    return [n for n in dict.fromkeys(nomes) if n]
+        do_disco |= set(n for n in (git(raiz, 'diff', '--name-only') or '').split('\n') if n)
+    return [n for n in dict.fromkeys(nomes+sorted(do_disco)) if n], do_disco
 
 def conteudo_stage(raiz, caminho):
     blob = git(raiz, 'show', ':'+caminho, binario=True)
@@ -225,12 +255,13 @@ def regra_migracao(entrada, comando, pasta):
         return None
     raiz, repo_rel, projeto = mapeado
     if COMMIT.search(comando):
-        candidatos = arquivos_do_commit(raiz, comando)
+        candidatos, do_disco = arquivos_do_commit(raiz, comando, pasta)
         acao = 'commit'
     elif DB_PUSH.search(comando):
         candidatos = [n for n in (git(raiz, 'diff', '--name-only', 'HEAD') or '').split('\n') if n]
         upstream = git(raiz, 'diff', '--name-only', '@{u}..HEAD')
         candidatos += [n for n in (upstream or '').split('\n') if n]
+        do_disco = set(candidatos)
         migracoes = sorted((raiz/'supabase/migrations').glob('*.sql')) if (raiz/'supabase/migrations').is_dir() else []
         if migracoes:
             candidatos.append(migracoes[-1].relative_to(raiz).as_posix())
@@ -243,7 +274,7 @@ def regra_migracao(entrada, comando, pasta):
             continue
         no_disco = (raiz/caminho).read_bytes() if (raiz/caminho).is_file() else None
         # commit sem -a leva o stage; commit -a e db push levam o que está no disco.
-        conteudo = conteudo_stage(raiz, caminho) if acao == 'commit' and not COMMIT_TUDO.search(comando) else no_disco
+        conteudo = no_disco if caminho in do_disco else conteudo_stage(raiz, caminho)
         if conteudo is None or not sensivel(conteudo):
             continue
         sha = hashlib.sha256(conteudo).hexdigest()

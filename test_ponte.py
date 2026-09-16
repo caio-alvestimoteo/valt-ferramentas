@@ -327,4 +327,14 @@ class PonteTest(unittest.TestCase):
         with self.assertRaises(ValueError):self.abrir(pedido='i-seg',repositorio='Seara/food',arquivos=['config.py'])
         with self.assertRaises(ValueError):self.abrir(pedido='i-trav',repositorio='Seara/food',arquivos=['../../fora.py'])
 
+    def test_ambiente_grafico_vem_da_sessao(self):
+        falso=type('R',(),{'stdout':'DISPLAY=:0\nWAYLAND_DISPLAY=wayland-0\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1/bus\nXDG_RUNTIME_DIR=/run/user/1\nOUTRA=x\n'})()
+        with patch.dict(os.environ,{},clear=True),patch('ponte.subprocess.run',return_value=falso),patch('ponte.Path.is_dir',return_value=False):
+            ponte.ambiente_grafico()
+            self.assertEqual(os.environ['WAYLAND_DISPLAY'],'wayland-0');self.assertEqual(os.environ['DISPLAY'],':0')
+            self.assertNotIn('OUTRA',os.environ)
+    def test_ambiente_grafico_nao_sobrescreve(self):
+        with patch.dict(os.environ,{'DISPLAY':':9','WAYLAND_DISPLAY':'w','DBUS_SESSION_BUS_ADDRESS':'b','XDG_RUNTIME_DIR':'r'}),patch('ponte.subprocess.run') as run:
+            ponte.ambiente_grafico(); run.assert_not_called()
+
 if __name__=='__main__':unittest.main()

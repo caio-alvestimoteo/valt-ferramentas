@@ -131,6 +131,26 @@ def status(id_consulta, espera_segundos=0):
         response['instrucao'] = 'Consulta ativa. Chame consulta_status com espera_segundos=25 até estado final; não finalize a conversa.'
     return response
 
+VARIAVEIS_GRAFICAS = ('DISPLAY', 'WAYLAND_DISPLAY', 'DBUS_SESSION_BUS_ADDRESS', 'XDG_RUNTIME_DIR')
+
+def ambiente_grafico():
+    """Garante as variáveis da sessão gráfica: o cursor-agent sobe o MCP sem DISPLAY/WAYLAND_DISPLAY."""
+    if all(os.environ.get(nome) for nome in VARIAVEIS_GRAFICAS):
+        return
+    runtime = Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}')
+    if runtime.is_dir():
+        os.environ.setdefault('XDG_RUNTIME_DIR', str(runtime))
+        if (runtime/'bus').exists():
+            os.environ.setdefault('DBUS_SESSION_BUS_ADDRESS', f'unix:path={runtime/"bus"}')
+    try:
+        saida = subprocess.run(['systemctl', '--user', 'show-environment'], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        saida = ''
+    for linha in saida.splitlines():
+        nome, _, valor = linha.partition('=')
+        if nome in VARIAVEIS_GRAFICAS and valor and not os.environ.get(nome):
+            os.environ[nome] = valor
+
 def start(projeto, pergunta, provedor, repositorio='', arquivos=None, interativo=False, id_pedido='', modo='investigador'):
     if provedor not in {'claude', 'codex'}:
         raise ValueError('Escolha claude ou codex')
@@ -160,8 +180,9 @@ def start(projeto, pergunta, provedor, repositorio='', arquivos=None, interativo
         raise ValueError('Pergunta contém possível segredo')
     if not shutil.which(provedor) or not shutil.which('ptyxis'):
         raise ValueError('Instale/autentique a CLI e disponibilize o Ptyxis antes de consultar')
+    ambiente_grafico()
     if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
-        raise ValueError('Consulta exige sessão gráfica para o terminal visível')
+        raise ValueError('Consulta exige sessão gráfica para o terminal visível; não altere a configuração do MCP, avise o usuário')
     STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (STATE/'launch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

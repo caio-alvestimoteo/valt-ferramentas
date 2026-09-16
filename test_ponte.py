@@ -212,7 +212,7 @@ class PonteTest(unittest.TestCase):
 
     # --- F1: robustez
     def abrir(self,projeto='Seara/Food',pedido='r1',**kw):
-        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen'):
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch.object(ponte,'subprocess'):
             return ponte.start(projeto,'login','claude',id_pedido=pedido,**kw)
     def test_saida_do_mcp_nao_cancela_consulta(self):
         self.assertFalse(hasattr(ponte,'OWNED'))
@@ -314,5 +314,17 @@ class PonteTest(unittest.TestCase):
         script='import sys,json; sys.stdin.read(); print(json.dumps({"type":"result","result":"usage limit reached","is_error":True}))'
         with patch('ponte.provider_command',return_value=[sys.executable,'-c',script]),patch('builtins.print'):ponte.worker(jid)
         self.assertIn('Cota',ponte.status(jid)['erro'])
+
+    def test_investigador_aceita_arquivo_grande_com_hash(self):
+        self.put(self.s/'Seara/food/grande.sql','select 1;\n'*8000)  # 80 KB: estoura o orçamento do modo parecer
+        with self.assertRaises(ValueError):self.abrir(pedido='p-grande',modo='parecer',repositorio='Seara/food',arquivos=['grande.sql'])
+        job=ponte.read_job(self.abrir(pedido='i-grande',repositorio='Seara/food',arquivos=['grande.sql'])['id'])
+        fonte=[f for f in job['pacote']['fontes'] if f['arquivo']=='Sites/Seara/food/grande.sql'][0]
+        self.assertEqual(fonte['sha256'],__import__('hashlib').sha256((self.s/'Seara/food/grande.sql').read_bytes()).hexdigest())
+        self.assertNotIn('select 1;',job['pacote']['texto'])
+    def test_investigador_ainda_barra_segredo_e_travessia(self):
+        self.put(self.s/'Seara/food/config.py','API_KEY="sk-'+('x'*30)+'"')
+        with self.assertRaises(ValueError):self.abrir(pedido='i-seg',repositorio='Seara/food',arquivos=['config.py'])
+        with self.assertRaises(ValueError):self.abrir(pedido='i-trav',repositorio='Seara/food',arquivos=['../../fora.py'])
 
 if __name__=='__main__':unittest.main()

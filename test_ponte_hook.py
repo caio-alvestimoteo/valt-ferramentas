@@ -251,5 +251,40 @@ class HookTest(unittest.TestCase):
     def test_fixture_prompt_continua(self):
         self.assertEqual(hook.processar('beforeSubmitPrompt', json.dumps(self.fixtures('beforeSubmitPrompt')[0])), {'continue': True})
 
+    # --- reavaliação: brechas encontradas
+    def test_commit_com_cd_a_partir_de_outra_pasta(self):
+        self.stage_migracao()
+        r = self.evento('beforeShellExecution', command=f'cd {self.repo} && git commit -m x', cwd=str(self.v))
+        self.assertEqual(r['permission'], 'deny')
+    def test_commit_com_cd_relativo(self):
+        self.stage_migracao()
+        r = self.evento('beforeShellExecution', command='cd Pessoais/lab && git add -A && git commit -m x', cwd=str(self.s))
+        self.assertEqual(r['permission'], 'deny')
+    def test_commit_com_git_C(self):
+        self.stage_migracao()
+        r = self.evento('beforeShellExecution', command=f'git -C "{self.repo}" commit -m x', cwd=str(self.v))
+        self.assertEqual(r['permission'], 'deny')
+    def test_tsc_repetido_com_cd(self):
+        for n in range(2):
+            self.evento('postToolUseFailure', tool_name='Shell', tool_use_id=f'cd{n}', cwd=str(self.v),
+                        tool_input={'command': f'cd {self.repo} && npx tsc --noEmit', 'cwd': str(self.v)},
+                        error_message='src/a.ts(1,1): error TS2322: x')
+        r = self.evento('beforeShellExecution', command=f'cd {self.repo} && npx tsc --noEmit', cwd=str(self.v))
+        self.assertEqual(r['permission'], 'deny')
+    def test_chamou_no_meio_e_anunciou_no_resumo_nao_retoma(self):
+        self.evento('beforeSubmitPrompt', prompt='pede segunda opinião')
+        time.sleep(0.01)
+        self.evento('afterMCPExecution', tool_name='consulta_iniciar', result_json=json.dumps({'id': 'f'*32, 'estado': 'abrindo'}))
+        self.put(self.state/('f'*32)/'job.json', json.dumps({'id': 'f'*32, 'estado': 'concluida'}))
+        self.evento('afterAgentResponse', text='Vou abrir a consulta ao Claude e depois resumo; o parecer está abaixo.')
+        self.assertEqual(self.evento('stop', status='completed', loop_count=0), {})
+    def test_chamada_de_turno_anterior_nao_cobre_anuncio_novo(self):
+        self.evento('beforeSubmitPrompt', prompt='primeiro')
+        self.evento('afterMCPExecution', tool_name='consulta_iniciar', result_json=json.dumps({'id': 'a1'*16, 'estado': 'concluida'}))
+        time.sleep(0.01)
+        self.evento('beforeSubmitPrompt', prompt='agora outra coisa')
+        self.evento('afterAgentResponse', text='Vou abrir a consulta ao Claude.')
+        self.assertIn('followup_message', self.evento('stop', status='completed', loop_count=0))
+
 if __name__ == '__main__':
     unittest.main()

@@ -199,7 +199,27 @@ def conteudo_stage(raiz, caminho):
         blob = (raiz/caminho).read_bytes()
     return blob
 
+def diretorio_efetivo(comando, pasta, alvo):
+    """Pasta onde roda o trecho do comando que casa com `alvo`, seguindo `cd X &&` e `git -C X`."""
+    atual = Path(pasta).expanduser() if pasta else None
+    for trecho in re.split(r'&&|\|\||;|\n', comando):
+        trecho = trecho.strip()
+        mudanca = re.match(r'^(?:cd|pushd)\s+("[^"]+"|\'[^\']+\'|\S+)\s*$', trecho)
+        if mudanca:
+            destino = Path(os.path.expanduser(mudanca.group(1).strip('"\'')))
+            atual = destino if destino.is_absolute() or atual is None else (atual/destino)
+            continue
+        if alvo.search(' '+trecho):
+            via_c = re.search(r'\bgit\s+-C\s+("[^"]+"|\'[^\']+\'|\S+)', trecho)
+            if via_c:
+                destino = Path(os.path.expanduser(via_c.group(1).strip('"\'')))
+                return destino if destino.is_absolute() or atual is None else (atual/destino)
+            return atual
+    return atual
+
 def regra_migracao(entrada, comando, pasta):
+    alvo = COMMIT if COMMIT.search(comando) else DB_PUSH
+    pasta = diretorio_efetivo(comando, pasta, alvo)
     mapeado = repo_mapeado(pasta)
     if not mapeado:
         return None
@@ -254,7 +274,7 @@ def regra_erro_repetido(conversa, comando, pasta):
     tipo = tipo_teste(comando)
     if not tipo:
         return None
-    mapeado = repo_mapeado(pasta)
+    mapeado = repo_mapeado(diretorio_efetivo(comando, pasta, TESTE))
     if not mapeado:
         return None
     raiz, repo_rel, projeto = mapeado
@@ -338,7 +358,8 @@ def after_tool(entrada, conversa, falhou=False):
     if not falhou and codigo in (0, None) and not ERRO.search(saida):
         return {}
     ferramenta = entrada.get('tool_input') if isinstance(entrada.get('tool_input'), dict) else {}
-    mapeado = repo_mapeado(Path(entrada.get('cwd') or ferramenta.get('cwd') or '') if (entrada.get('cwd') or ferramenta.get('cwd')) else None)
+    base = entrada.get('cwd') or ferramenta.get('cwd')
+    mapeado = repo_mapeado(diretorio_efetivo(comando, base, TESTE))
     assinatura = assinatura_erro(saida)
     if not mapeado or not assinatura:
         return {}
@@ -394,6 +415,7 @@ def before_prompt(entrada, conversa):
         conversa.d['sem_consulta'] = True
         registrar('hook_sem_consulta')
     conversa.d.pop('anunciou_em', None)
+    conversa.d['turno_em'] = agora()
     conversa.d['retomadas'] = 0
     return {'continue': True}
 
@@ -423,7 +445,10 @@ def stop(entrada, conversa):
         return retomar(conversa, f'A consulta {ativa} da valt-ponte ainda está ativa. Chame consulta_status '
                        f'(id_consulta "{ativa}", espera_segundos 25) até o estado final e avalie o parecer antes de encerrar.', 'consulta_ativa')
     anunciou = conversa.d.get('anunciou_em')
-    if anunciou and conversa.d.get('chamou_em', 0) < anunciou:
+    # afterAgentResponse chega no fim do turno: basta ter chamado consulta_iniciar em qualquer ponto do turno.
+    chamou = conversa.d.get('chamou_em')
+    chamou_no_turno = chamou is not None and chamou >= conversa.d.get('turno_em', 0)
+    if anunciou and not chamou_no_turno:
         return retomar(conversa, 'Você anunciou uma consulta ao consultor mas encerrou sem chamar a ferramenta. Chame agora '
                        'consulta_iniciar do servidor MCP valt-ponte (provedor claude, modo investigador, interativo false, '
                        'id_pedido único) e depois consulta_status até o estado final, no mesmo turno. Task/subagente não substitui.', 'anunciou')

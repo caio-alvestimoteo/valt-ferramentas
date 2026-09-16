@@ -16,7 +16,8 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from ponte_contexto import build, inside, stale, SECRET
+import hashlib
+from ponte_contexto import build, inside, safe_text, stale, SECRET
 
 VAULT = Path(os.environ.get('VALT', str(Path.home()/'Valt'))).expanduser().resolve()
 SITES = Path(os.environ.get('SITES', str(Path.home()/'Sites'))).expanduser().resolve()
@@ -139,7 +140,22 @@ def start(projeto, pergunta, provedor, repositorio='', arquivos=None, interativo
         raise ValueError('interativo deve ser booleano')
     if not id_pedido or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', id_pedido):
         raise ValueError('id_pedido obrigatório para impedir consultas duplicadas')
-    pacote = build(VAULT, SITES, projeto, pergunta, repositorio, arquivos)
+    if modo == 'investigador' and arquivos:
+        # O investigador lê do disco: os arquivos só precisam ser válidos e ter hash, sem orçamento de texto.
+        if len(arquivos) > 6 or not repositorio:
+            raise ValueError('Até 6 arquivos de código e repositório explícito obrigatório')
+        pacote = build(VAULT, SITES, projeto, pergunta, repositorio, None)
+        repo = inside(SITES, repositorio)
+        for rel in arquivos:
+            try:
+                caminho = inside(repo, rel)
+                safe_text(caminho, rel)
+            except ValueError as exc:
+                raise ValueError(f'{exc} — `arquivos` recebe caminhos relativos ao repositório {repositorio}') from exc
+            pacote['fontes'].append({'arquivo': 'Sites/'+repositorio+'/'+rel,
+                                     'sha256': hashlib.sha256(caminho.read_bytes()).hexdigest(), 'truncado': False})
+    else:
+        pacote = build(VAULT, SITES, projeto, pergunta, repositorio, arquivos)
     if SECRET.search(pergunta):
         raise ValueError('Pergunta contém possível segredo')
     if not shutil.which(provedor) or not shutil.which('ptyxis'):

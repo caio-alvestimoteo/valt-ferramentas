@@ -360,6 +360,8 @@ def finish(id_consulta, parecer, lidos=()):
     relative = pacote['projeto']+'/consultas/'+id_consulta+'.md'
     destination = inside(VAULT, relative)
     fontes = '\n'.join('- '+f['arquivo']+' · SHA256 '+f['sha256'] for f in pacote['fontes'])
+    # Nenhum caminho com nome de usuário no Valt (regra 1 do ambiente).
+    parecer = parecer.replace(str(Path.home()), '~')
     lidos = [str(item).replace(str(Path.home()), '~') for item in lidos]
     lidos_md = '\n'.join('- `'+curto(item, 200).replace('`', "'")+'`' for item in lidos) or '- (nenhum registro)'
     body = (f"# Consulta {id_consulta}\n\nProvedor: {data['provedor']} · modo: {data.get('modo', 'parecer')}\n\n"

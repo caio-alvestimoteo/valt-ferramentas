@@ -306,9 +306,9 @@ class PonteTest(unittest.TestCase):
         self.assertIn('Arquivos lidos pelo consultor',registro);self.assertIn('login.md',registro)
     def test_registro_sem_nome_de_usuario(self):
         jid=self.create_job(modo='investigador')
-        ponte.finish(jid,'ok',[str(Path.home()/'Sites/x/a.py')])
+        ponte.finish(jid,'ok em '+str(Path.home()/'Sites/x/b.py:3'),[str(Path.home()/'Sites/x/a.py')])
         registro=(self.project/'consultas'/f'{jid}.md').read_text()
-        self.assertIn('~/Sites/x/a.py',registro);self.assertNotIn(str(Path.home()),registro)
+        self.assertIn('~/Sites/x/a.py',registro);self.assertIn('~/Sites/x/b.py:3',registro);self.assertNotIn(str(Path.home()),registro)
     def test_investigador_resultado_com_erro(self):
         jid=self.create_job(estado='abrindo',modo='investigador')
         script='import sys,json; sys.stdin.read(); print(json.dumps({"type":"result","result":"usage limit reached","is_error":True}))'

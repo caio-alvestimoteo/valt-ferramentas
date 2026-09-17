@@ -434,12 +434,6 @@ def caminhos(valor, chave=''):
 
 def pre_tool(entrada, conversa):
     nome = str(entrada.get('tool_name') or '')
-    if not conversa.d.get('pre_tool_visto'):
-        # Primeira entrada real registrada para conferir o contrato (sem conteúdo, só forma).
-        entrada_ferramenta = entrada.get('tool_input')
-        chaves = sorted(entrada_ferramenta) if isinstance(entrada_ferramenta, dict) else type(entrada_ferramenta).__name__
-        log(f'preToolUse visto: tool_name={nome!r} tool_input={chaves}')
-        conversa.d['pre_tool_visto'] = True
     if nome.lower() in FERRAMENTAS_LEITURA or nome.startswith('MCP:') or nome == 'Shell':
         return {}
     ferramenta = entrada.get('tool_input')

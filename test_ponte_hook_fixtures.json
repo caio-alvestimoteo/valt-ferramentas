@@ -26,6 +26,20 @@
    ],
    "user_email": "usuario@exemplo",
    "transcript_path": null
+  },
+  {
+   "conversation_id": "draft-8654a168-d972-4800-a771-35f6b176b09c",
+   "generation_id": "",
+   "model": "default",
+   "model_id": "default",
+   "is_background_agent": false,
+   "composer_mode": "agent",
+   "session_id": "draft-8654a168-d972-4800-a771-35f6b176b09c",
+   "hook_event_name": "sessionStart",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
   }
  ],
  "beforeSubmitPrompt": [
@@ -74,6 +88,55 @@
    "workspace_roots": [
     "{HOME}/Valt",
     "{HOME}/Sites"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "cursor-grok-4.6-high",
+   "model_id": "grok-4.6",
+   "model_params": [
+    {
+     "id": "effort",
+     "value": "high"
+    },
+    {
+     "id": "fast",
+     "value": "false"
+    }
+   ],
+   "composer_mode": "plan",
+   "prompt": "texto do usuário (omitido)",
+   "attachments": [
+    {
+     "type": "rule",
+     "file_path": "Valt/idioma.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt/descoberta-projeto.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt/valt-ponte.mdc"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt/CLAUDE.md"
+    },
+    {
+     "type": "rule",
+     "file_path": "Valt/AGENTS.md"
+    }
+   ],
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "beforeSubmitPrompt",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
    ],
    "user_email": "usuario@exemplo",
    "transcript_path": null
@@ -199,6 +262,74 @@
    ],
    "user_email": "usuario@exemplo",
    "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Grep",
+   "tool_input": {
+    "pattern": "[Rr]icca|[Gg]radina",
+    "file_path": "{HOME}/Valt",
+    "glob": "**/descoberta-projeto.md"
+   },
+   "tool_output": "{\"pattern\":\"[Rr]icca|[Gg]radina\",\"success\":true}",
+   "duration": 6.304,
+   "tool_use_id": "call-89e9b4df-c8e4-41c0-b532-9723fc6e827d-1\nfc_f7acfe1c-1319-9d6d-aa20-998c2f9e0aec_1",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "postToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Read",
+   "tool_input": {
+    "file_path": "{HOME}/Valt/indices/descoberta-projeto.md"
+   },
+   "tool_output": "{\"file_path\":\"{HOME}/Valt/indices/descoberta-projeto.md\",\"content_length\":3034}",
+   "duration": 561.407,
+   "tool_use_id": "call-89e9b4df-c8e4-41c0-b532-9723fc6e827d-0\nfc_f7acfe1c-1319-9d6d-aa20-998c2f9e0aec_0",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "postToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Shell",
+   "tool_input": {
+    "command": "git -C {HOME}/Sites/Seara/ricca status -sb && echo '---' && git -C {HOME}/Sites/Seara/ricca log --since='2026-09-17 00:00' --until='2026-09-18 00:00' --oneline --all && echo '---DIFFSTAT---' && git -C {HOME}/Sites/Seara/ricca diff --stat HEAD 2>/dev/null | tail -20 && echo '==== GRADINA ====' && git -C {HOME}/Sites/Seara/gradina status -sb && echo '---' && git -C {HOME}/Sites/Seara/gradina log --since='2026-09-17 00:00' --until='2026-09-18 00:00' --oneline --all && echo '---DIFFSTAT---' && git -C {HOME}/Sites/Seara/gradina diff --stat HEAD 2>/dev/null | tail -20",
+    "cwd": "",
+    "timeout": 30000
+   },
+   "tool_output": "{\"output\":\"## feat/recipe-pdf-download...origin/feat/recipe-pdf-download\\n---\\nbc87750 Adiciona URL de PDF nas receitas com download no front e pré-cadastro.\\n---DIFFSTAT---\\n==== GRADINA ====\\n## feat/recipe-pdf-download...origin/feat/recipe-pdf-download\\n?? app/.htaccess\\n---\\ne925b47 Usa o verde do header no botão DOWNLOAD das receitas.\\n75194fe Adiciona URL de PDF nas receitas com download no front.\\n6888677 Revert \\\"test: comentário TESTEGRADINA para verificar pipeline de deploy\\\"\\n1e4a915 test: comentário TESTEGRADINA para verificar pipeline de deploy\\n---DIFFSTAT---\\n\",\"exitCode\":0}",
+   "duration": 305.19,
+   "tool_use_id": "bdc6c0a8-4e98-47e5-abc7-5611c6c5684f",
+   "cwd": "",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "postToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-noc-Valt/agent-transcripts/7facdab6-4e8d-47cf-a26f-780c471ec48e/7facdab6-4e8d-47cf-a26f-780c471ec48e.jsonl"
   }
  ],
  "postToolUseFailure": [
@@ -313,6 +444,70 @@
    ],
    "user_email": "usuario@exemplo",
    "transcript_path": "{HOME}/.cursor/projects/home-usuario-Valt/agent-transcripts/2a513c1b-6536-4ae8-8822-f11235d7eafa/2a513c1b-6536-4ae8-8822-f11235d7eafa.jsonl"
+  }
+ ],
+ "preToolUse": [
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Grep",
+   "tool_input": {
+    "pattern": "[Rr]icca|[Gg]radina",
+    "file_path": "{HOME}/Valt",
+    "glob": "**/descoberta-projeto.md"
+   },
+   "tool_use_id": "call-89e9b4df-c8e4-41c0-b532-9723fc6e827d-1\nfc_f7acfe1c-1319-9d6d-aa20-998c2f9e0aec_1",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "preToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Read",
+   "tool_input": {
+    "file_path": "{HOME}/Valt/indices/descoberta-projeto.md"
+   },
+   "tool_use_id": "call-89e9b4df-c8e4-41c0-b532-9723fc6e827d-0\nfc_f7acfe1c-1319-9d6d-aa20-998c2f9e0aec_0",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "preToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": null
+  },
+  {
+   "conversation_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "generation_id": "8fff5196-f9d0-4895-b294-5966d94e946c",
+   "model": "grok-4.6",
+   "tool_name": "Shell",
+   "tool_input": {
+    "command": "git -C {HOME}/Sites/Seara/ricca status -sb && echo '---' && git -C {HOME}/Sites/Seara/ricca log --since='2026-09-17 00:00' --until='2026-09-18 00:00' --oneline --all && echo '---DIFFSTAT---' && git -C {HOME}/Sites/Seara/ricca diff --stat HEAD 2>/dev/null | tail -20 && echo '==== GRADINA ====' && git -C {HOME}/Sites/Seara/gradina status -sb && echo '---' && git -C {HOME}/Sites/Seara/gradina log --since='2026-09-17 00:00' --until='2026-09-18 00:00' --oneline --all && echo '---DIFFSTAT---' && git -C {HOME}/Sites/Seara/gradina diff --stat HEAD 2>/dev/null | tail -20",
+    "cwd": "",
+    "timeout": 30000
+   },
+   "tool_use_id": "bdc6c0a8-4e98-47e5-abc7-5611c6c5684f",
+   "cwd": "",
+   "session_id": "7facdab6-4e8d-47cf-a26f-780c471ec48e",
+   "hook_event_name": "preToolUse",
+   "cursor_version": "3.20.21",
+   "workspace_roots": [
+    "{HOME}/Valt",
+    "{HOME}/Sites/Seara/ricca"
+   ],
+   "user_email": "usuario@exemplo",
+   "transcript_path": "{HOME}/.cursor/projects/home-noc-Valt/agent-transcripts/7facdab6-4e8d-47cf-a26f-780c471ec48e/7facdab6-4e8d-47cf-a26f-780c471ec48e.jsonl"
   }
  ]
 }

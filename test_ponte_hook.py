@@ -578,6 +578,30 @@ class HookTest(unittest.TestCase):
         texto = (Path(__file__).parent/'test_ponte_hook_fixtures.json').read_text()
         texto = texto.replace('{HOME}/Sites/Trabalho/valt-ferramentas', str(self.repo)).replace('{HOME}', self.tmp.name)
         return json.loads(texto)[evento]
+    def test_fixture_contrato_do_3_20(self):
+        """Capturas reais do Cursor 3.20.21, a versão que quebrou o gatilho por evento."""
+        versoes = {e.get('cursor_version') for evento in ('sessionStart', 'preToolUse', 'postToolUse')
+                   for e in self.fixtures(evento)}
+        self.assertIn('3.20.21', versoes)
+        self.assertIn('3.18.25', versoes)  # o contrato antigo segue coberto
+    def test_fixture_create_plan_nao_chega_ao_pre_tool(self):
+        """O achado que derrubou o 1º desenho: o 3.20 só expõe algumas ferramentas ao preToolUse.
+
+        Se um dia CreatePlan aparecer aqui, este teste cai e o gatilho por evento volta a ser
+        possível — hoje o plano precisa vir da transcrição.
+        """
+        nomes = {e.get('tool_name') for e in self.fixtures('preToolUse')}
+        self.assertTrue(nomes <= {'Read', 'Grep', 'Shell'}, f'ferramentas novas no preToolUse: {nomes}')
+        self.assertNotIn('CreatePlan', nomes)
+    def test_fixture_composer_mode_chega_ao_hook(self):
+        """composer_mode é o único campo de modo do contrato; 'plan' é valor válido."""
+        for evento in ('sessionStart', 'beforeSubmitPrompt'):
+            for entrada in self.fixtures(evento):
+                self.assertIn('composer_mode', entrada)
+                self.assertEqual(hook.processar(evento, json.dumps(entrada)).get('continue'), True)
+    def test_fixture_pre_tool_do_3_20_nao_quebra_o_hook(self):
+        for entrada in self.fixtures('preToolUse'):
+            self.assertEqual(hook.processar('preToolUse', json.dumps(entrada)), {})
     def test_fixture_before_shell_campos(self):
         for entrada in self.fixtures('beforeShellExecution'):
             self.assertIn('command', entrada); self.assertIn('cwd', entrada); self.assertIn('conversation_id', entrada)

@@ -437,12 +437,34 @@ def restaurar_config():
     if instalador.is_file():
         subprocess.run(['bash', str(instalador), 'instalar', '--aplicar'], capture_output=True, timeout=3)
 
+def pediu_sem_consulta(entrada, conversa):
+    """#sem-consulta vem do beforeSubmitPrompt (IDE) ou das mensagens do usuário na transcrição (cursor-agent não dispara o evento)."""
+    if conversa.d.get('sem_consulta'):
+        return True
+    transcricao = entrada.get('transcript_path')
+    if not transcricao or not Path(transcricao).is_file():
+        return False
+    for linha in Path(transcricao).read_text(encoding='utf-8', errors='replace').splitlines():
+        try:
+            item = json.loads(linha)
+        except ValueError:
+            continue
+        if item.get('role') != 'user':
+            continue
+        conteudo = item.get('message', {}).get('content', [])
+        texto = ' '.join(p.get('text', '') for p in conteudo if isinstance(p, dict)) if isinstance(conteudo, list) else str(conteudo)
+        if '#sem-consulta' in texto:
+            conversa.d['sem_consulta'] = True
+            registrar('hook_sem_consulta', origem='hook', mensagem='lido da transcrição')
+            return True
+    return False
+
 def before_shell(entrada, conversa):
     comando, pasta = comando_da_entrada(entrada), pasta_da_entrada(entrada)
     protecao = regra_protecao(comando)
     if protecao:
         return protecao
-    if conversa.d.get('sem_consulta'):
+    if pediu_sem_consulta(entrada, conversa):
         return {}
     return regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta) or {}
 
@@ -510,8 +532,8 @@ def after_mcp(entrada, conversa):
     resultado = entrada.get('result_json') or entrada.get('result') or entrada.get('tool_output') or ''
     texto = resultado if isinstance(resultado, str) else json.dumps(resultado, ensure_ascii=False)
     ids = set(re.findall(r'\b[a-f0-9]{32}\b', texto))
+    estado = re.search(r'estado\\*"\s*:\s*\\*"(\w+)', texto)
     for id_consulta in ids:
-        estado = re.search(r'"estado"\s*:\s*\\?"(\w+)', texto)
         conversa.d['consultas'][id_consulta] = {'estado': estado.group(1) if estado else '?', 'em': agora()}
     # Só conta como chamada se a consulta existiu de fato (erro de MCP não devolve id).
     if nome == 'consulta_iniciar' and ids:
@@ -573,7 +595,7 @@ def retomar(conversa, mensagem, regra):
     return {'followup_message': mensagem}
 
 def stop(entrada, conversa):
-    if conversa.d.get('sem_consulta'):
+    if pediu_sem_consulta(entrada, conversa):
         return {}
     if conversa.d.pop('config_restaurada_em', None):
         return retomar(conversa, 'Você editou a configuração da valt-ponte (~/.cursor/mcp.json ou hooks.json); o hook restaurou a versão '

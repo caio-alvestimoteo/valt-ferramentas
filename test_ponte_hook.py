@@ -378,5 +378,22 @@ class HookTest(unittest.TestCase):
         self.stage_migracao()
         self.assertEqual(self.evento('beforeShellExecution', command=f'cd {self.repo} && git log --grep="git commit"', cwd=str(self.v)), {})
 
+    # --- cursor-agent não dispara beforeSubmitPrompt: #sem-consulta pela transcrição
+    def test_sem_consulta_pela_transcricao(self):
+        self.stage_migracao()
+        transcricao = self.state/'t.jsonl'
+        self.put(transcricao, json.dumps({'role': 'user', 'message': {'content': [{'type': 'text', 'text': '<user_query>#sem-consulta commita</user_query>'}]}})+'\n')
+        self.assertEqual(self.evento('beforeShellExecution', command='git commit -m x', cwd=str(self.repo), transcript_path=str(transcricao)), {})
+    def test_sem_consulta_so_vale_do_usuario(self):
+        self.stage_migracao()
+        transcricao = self.state/'t2.jsonl'
+        self.put(transcricao, json.dumps({'role': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'posso usar #sem-consulta'}]}})+'\n')
+        self.assertEqual(self.evento('beforeShellExecution', command='git commit -m x', cwd=str(self.repo), transcript_path=str(transcricao))['permission'], 'deny')
+    def test_estado_da_consulta_no_resultado_real(self):
+        interno = json.dumps({'id': 'a'*32, 'estado': 'abrindo'})
+        self.evento('afterMCPExecution', tool_name='consulta_iniciar', result_json=json.dumps({'content': [{'type': 'text', 'text': interno}]}))
+        d = json.loads(hook.caminho_conversa({'conversation_id': 'c1'}).read_text())
+        self.assertEqual(d['consultas']['a'*32]['estado'], 'abrindo')
+
 if __name__ == '__main__':
     unittest.main()

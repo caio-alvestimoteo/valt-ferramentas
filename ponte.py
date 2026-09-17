@@ -420,6 +420,27 @@ def segurar_janela():
     except (EOFError, KeyboardInterrupt):
         pass
 
+def ler_pergunta(id_consulta):
+    """Espera uma linha válida no terminal; Enter vazio ou texto inválido só avisa, não derruba a consulta."""
+    while True:
+        while not select.select([sys.stdin], [], [], 1)[0]:
+            current = read_job(id_consulta)
+            if current['estado'] in FINAL or time.time() > current['prazo'] or not owner_alive(current):
+                raise TimeoutError('Consulta cancelada ou expirada')
+        line = sys.stdin.readline()
+        if not line or line.strip() == '/cancelar':
+            raise KeyboardInterrupt()
+        line = line.strip()
+        if not line:
+            continue
+        if SECRET.search(line):
+            print('Pergunta parece conter segredo; reescreva sem ele.', flush=True)
+            continue
+        if len(line) > 4000:
+            print('Pergunta longa demais (máx. 4000 caracteres); resuma.', flush=True)
+            continue
+        return line
+
 def worker(id_consulta):
     data = read_job(id_consulta)
     if data['estado'] != 'abrindo':
@@ -445,18 +466,9 @@ def worker(id_consulta):
                 break
             mark(id_consulta, estado='aguardando_usuario')
             print('\nDigite uma pergunta para aprofundar; /devolver retorna ao Cursor; /cancelar cancela.', flush=True)
-            while not select.select([sys.stdin], [], [], 1)[0]:
-                current = read_job(id_consulta)
-                if current['estado'] in FINAL or time.time() > current['prazo'] or not owner_alive(current):
-                    raise TimeoutError('Consulta cancelada ou expirada')
-            line = sys.stdin.readline()
-            if not line or line.strip() == '/cancelar':
-                raise KeyboardInterrupt()
-            line = line.strip()
+            line = ler_pergunta(id_consulta)
             if line == '/devolver':
                 break
-            if not line or SECRET.search(line) or len(line)>4000:
-                raise ValueError('Pergunta vazia, longa ou potencialmente sensível')
             if turn == 5:
                 raise ValueError('Limite de seis rodadas; inicie nova consulta')
             mark(id_consulta, estado='executando')

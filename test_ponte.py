@@ -344,4 +344,22 @@ class PonteTest(unittest.TestCase):
         self.assertIn('Sites/Seara/food/package.json',[f['arquivo'] for f in job['pacote']['fontes']])
         with self.assertRaises(ValueError):self.abrir(pedido='i-env',repositorio='Seara/food',arquivos=['.env'])
 
+    def test_interativo_ignora_enter_vazio_e_devolve(self):
+        jid=self.create_job(estado='abrindo',interativo=True)
+        leitura,escrita=os.pipe()
+        os.write(escrita,b'\n\n/devolver\n'); os.close(escrita)
+        with open(leitura) as entrada, patch.object(sys,'stdin',entrada), \
+             patch('ponte.provider_command',return_value=[sys.executable,'-c','print("Veredito: ok")']), patch('builtins.print'):
+            ponte.worker(jid)
+        self.assertEqual(ponte.status(jid)['estado'],'concluida')
+    def test_interativo_segunda_rodada(self):
+        jid=self.create_job(estado='abrindo',interativo=True)
+        leitura,escrita=os.pipe()
+        os.write(escrita,b'e o limite de N?\n/devolver\n'); os.close(escrita)
+        script='import sys; p=sys.stdin.read(); print("Rodada 2" if "limite de N" in p else "Rodada 1")'
+        with open(leitura) as entrada, patch.object(sys,'stdin',entrada), \
+             patch('ponte.provider_command',return_value=[sys.executable,'-c',script]), patch('builtins.print'):
+            ponte.worker(jid)
+        self.assertEqual(ponte.status(jid)['parecer'],'Rodada 2')
+
 if __name__=='__main__':unittest.main()

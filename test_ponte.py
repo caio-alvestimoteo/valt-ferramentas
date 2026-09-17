@@ -337,4 +337,11 @@ class PonteTest(unittest.TestCase):
         with patch.dict(os.environ,{'DISPLAY':':9','WAYLAND_DISPLAY':'w','DBUS_SESSION_BUS_ADDRESS':'b','XDG_RUNTIME_DIR':'r'}),patch('ponte.subprocess.run') as run:
             ponte.ambiente_grafico(); run.assert_not_called()
 
+    def test_arquivos_de_configuracao_aceitos_e_env_barrado(self):
+        self.put(self.s/'Seara/food/package.json','{"name": "food"}')
+        self.put(self.s/'Seara/food/.env','SENHA=x')
+        job=ponte.read_job(self.abrir(pedido='i-json',repositorio='Seara/food',arquivos=['package.json'])['id'])
+        self.assertIn('Sites/Seara/food/package.json',[f['arquivo'] for f in job['pacote']['fontes']])
+        with self.assertRaises(ValueError):self.abrir(pedido='i-env',repositorio='Seara/food',arquivos=['.env'])
+
 if __name__=='__main__':unittest.main()

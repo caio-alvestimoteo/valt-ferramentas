@@ -9,7 +9,7 @@ from pathlib import Path
 STOP = {'como', 'para', 'com', 'uma', 'que', 'dos', 'das', 'por', 'esse', 'essa'}
 DENIED = {'vpn', 'secrets', '.git', '.ssh', '.cursor', '.codex', '.claude',
           'node_modules', 'vendor', 'consultas', 'contextos', 'handoffs'}
-EXT = {'.md', '.py', '.js', '.ts', '.tsx', '.jsx', '.css', '.html', '.sh', '.sql'}
+EXT = {'.md', '.py', '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.css', '.scss', '.html', '.sh', '.sql', '.json', '.yml', '.yaml', '.toml', '.php', '.vue', '.svelte'}
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})|(?im:^\s*(?:[\w-]*(?:secret|password|token|api_key)[\w-]*)\s*[:=]\s*[\'\"]?[^\s\'\"$<{]{12,})')
 LEMBRETE_CONSULTOR = (
     'Gatilhos: migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '

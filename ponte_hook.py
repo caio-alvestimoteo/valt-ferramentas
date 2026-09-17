@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Hooks do Cursor que obrigam a consulta da valt-ponte nos momentos de risco.
+"""Hooks que obrigam a consulta da valt-ponte nos momentos de risco — núcleo das regras e adaptador do Cursor.
 
 Uso (em ~/.cursor/hooks.json): python3 ponte_hook.py <evento>, com a entrada JSON do Cursor no stdin.
+O Antigravity usa as mesmas regras por ponte_hook_antigravity.py, que traduz a entrada e a resposta.
 
 Regras:
 - beforeShellExecution nega `git commit` com migração sensível no stage e `supabase db push`
@@ -33,6 +34,7 @@ STATE = Path(os.environ.get('XDG_STATE_HOME', str(Path.home()/'.local/state')))/
 LIMITE_S = 4
 MAX_RETOMADAS = 2
 LIMITE_ARQUIVOS = 20
+IDE = 'cursor'  # o adaptador do Antigravity troca ao carregar
 
 SENSIVEL = re.compile(r'auth\.|\bgrant\b|\bpolicy\b|security\s+definer|e-?mail|telefone|phone|avatar|foto|'
                       r'\bnome\b|full_name|first_name|last_name|\bcpf\b', re.I)
@@ -46,7 +48,12 @@ ERRO = re.compile(r'error TS\d+[^\n]*|^\s*●[^\n]+|^FAIL\b[^\n]*|^not ok\b[^\n]
 ANUNCIO = re.compile(r'(abrir|iniciar|chamar|disparar|pedir|fazer)\b[^.\n]{0,50}(consulta|parecer)\b[^.\n]{0,50}(claude|codex|consultor|ponte|ptyxis)'
                      r'|consultar (o )?(claude|codex)\b|segunda opini[aã]o (do|ao|com o|pelo) (claude|codex)'
                      r'|(abrir|iniciar|chamar)\b[^.\n]{0,30}(consulta_iniciar|valt-ponte|o consultor)', re.I)
-CONFIG = re.compile(r'\.cursor/(mcp|hooks)\.json')
+# Configuração da ponte nas duas IDEs: o agente não edita (o instalador de cada IDE é a fonte).
+ARQUIVO_CONFIG = r'(?:\.cursor/(?:mcp|hooks)|\.gemini/config/(?:mcp_config|hooks)|\.agents/(?:mcp_config|hooks))\.json'
+CONFIG = re.compile(ARQUIVO_CONFIG)
+INSTALADORES = {'cursor': 'bootstrap/cursor/ponte-hooks.sh', 'antigravity': 'bootstrap/antigravity/ponte-hooks.sh'}
+AVISO_CONFIG = ('~/.cursor/mcp.json e hooks.json (Cursor) e ~/.gemini/config/mcp_config.json e hooks.json (Antigravity) '
+                'são mantidos pelos instaladores em ~/Valt/bootstrap/<ide>/ponte-hooks.sh')
 MATA_PONTE = re.compile(r'\b(p?kill|killall)\b[^;&|]*(ponte|\b\d+\b)')
 FERRAMENTA = re.compile(r'(consulta_iniciar|consulta_status|consulta_cancelar|contexto_valt)$')
 
@@ -62,7 +69,7 @@ def log(texto):
         pass
 
 def registrar(evento, **campos):
-    linha = {'hora': datetime.now().astimezone().isoformat(timespec='seconds'), 'ferramenta': evento, 'origem': 'hook'}
+    linha = {'hora': datetime.now().astimezone().isoformat(timespec='seconds'), 'ferramenta': evento, 'origem': 'hook', 'ide': IDE}
     linha.update({k: v for k, v in campos.items() if v not in (None, '', [])})
     try:
         with (STATE/'chamadas.jsonl').open('a', encoding='utf-8') as out:
@@ -387,11 +394,11 @@ def processos_da_ponte():
 
 def escreve_config(comando):
     """Só quando o destino da escrita é a configuração da ponte (ler ou copiar dela para outro lugar é livre)."""
-    alvo = r'[^;&|]*?\.cursor/(?:mcp|hooks)\.json'
+    alvo = r'[^;&|]*?' + ARQUIVO_CONFIG
     for trecho in trechos(comando):
         if not CONFIG.search(trecho):
             continue
-        if re.search(r'>{1,2}\s*["\']?[^\s;&|]*\.cursor/(?:mcp|hooks)\.json', trecho):
+        if re.search(r'>{1,2}\s*["\']?[^\s;&|]*' + ARQUIVO_CONFIG, trecho):
             return True
         if re.search(r'^(?:sudo\s+)?(?:sed\s+-\S*i|perl\s+-\S*i|truncate|chmod|chown|rm|ln|unlink)\b' + alvo, trecho):
             return True
@@ -400,7 +407,7 @@ def escreve_config(comando):
         destino = re.match(r'^(?:sudo\s+)?(?:cp|mv|install|rsync)\b.*\s(\S+)\s*$', trecho)
         if destino and CONFIG.search(destino.group(1)):
             return True
-        if re.search(r'\b(?:python3?|node|ruby|jq)\b', trecho) and re.search(r"open\([^)]*,\s*['\"][wa]|write_text|writeFile|>\s*\S*\.cursor|-i\b", trecho):
+        if re.search(r'\b(?:python3?|node|ruby|jq)\b', trecho) and re.search(r"open\([^)]*,\s*['\"][wa]|write_text|writeFile|>\s*\S*\.(?:cursor|gemini|agents)/|-i\b", trecho):
             return True
     return False
 
@@ -408,8 +415,7 @@ def regra_protecao(comando):
     """A configuração da ponte e seus processos não são do agente: nega escrita e kill."""
     if escreve_config(comando):
         return negar('alteração da configuração da ponte barrada',
-                     'O hook da valt-ponte barrou este comando: ~/.cursor/mcp.json e ~/.cursor/hooks.json são mantidos pelo '
-                     'instalador (~/Valt/bootstrap/cursor/ponte-hooks.sh) e não devem ser editados pelo agente. '
+                     'O hook da valt-ponte barrou este comando: ' + AVISO_CONFIG + ' e não devem ser editados pelo agente. '
                      'Se a ponte não funciona, relate o erro ao usuário em vez de alterar a configuração.', regra='protecao')
     alvo = MATA_PONTE.search(comando)
     if alvo and ('ponte' in alvo.group(0) or set(re.findall(r'\b\d+\b', alvo.group(0))) & processos_da_ponte()):
@@ -418,7 +424,10 @@ def regra_protecao(comando):
                      'Se a ponte não responde, relate ao usuário.', regra='protecao')
     return None
 
-FERRAMENTAS_LEITURA = {'read', 'read_file', 'grep', 'glob', 'ls', 'list_dir', 'codebase_search', 'semanticsearch', 'fetch'}
+FERRAMENTAS_LEITURA = {'read', 'read_file', 'grep', 'glob', 'ls', 'list_dir', 'codebase_search', 'semanticsearch', 'fetch',
+                       # Antigravity
+                       'view_file', 'view_file_outline', 'view_code_item', 'grep_search', 'find_by_name', 'read_url_content',
+                       'search_web', 'read_terminal', 'command_status'}
 
 def caminhos(valor, chave=''):
     """Só valores de campos de caminho (path, file_path, target_file…): o conteúdo escrito não conta."""
@@ -444,13 +453,14 @@ def pre_tool(entrada, conversa):
             pass
     if any(CONFIG.search(texto) for texto in caminhos(ferramenta)):
         registrar('hook_negou', mensagem=f'edição da configuração da ponte barrada ({nome})', regra='protecao')
-        aviso = ('valt-ponte: edição barrada — ~/.cursor/mcp.json e ~/.cursor/hooks.json são mantidos pelo instalador '
-                 '(~/Valt/bootstrap/cursor/ponte-hooks.sh). Não altere essa configuração; se a ponte falhar, relate o erro ao usuário.')
+        aviso = ('valt-ponte: edição barrada — ' + AVISO_CONFIG + '. Não altere essa configuração; '
+                 'se a ponte falhar, relate o erro ao usuário.')
         return {'permission': 'deny', 'user_message': aviso, 'agent_message': aviso}
     return {}
 
-def restaurar_config():
-    instalador = VAULT/'bootstrap/cursor/ponte-hooks.sh'
+def restaurar_config(caminho=''):
+    ide = 'antigravity' if re.search(r'\.(gemini|agents)/', str(caminho)) else 'cursor'
+    instalador = VAULT/INSTALADORES[ide]
     if instalador.is_file():
         subprocess.run(['bash', str(instalador), 'instalar', '--aplicar'], capture_output=True, timeout=3)
 
@@ -590,7 +600,7 @@ def after_mcp(entrada, conversa):
 def after_file_edit(entrada, conversa):
     caminho = entrada.get('file_path') or entrada.get('path')
     if caminho and CONFIG.search(str(Path(caminho).expanduser())):
-        restaurar_config()
+        restaurar_config(caminho)
         conversa.d['config_restaurada_em'] = agora()
         registrar('hook_restaurou', mensagem=str(caminho).replace(str(Path.home()), '~'))
         return {}
@@ -614,7 +624,7 @@ IDIOMA = ('Responda, narre, comente e nomeie tarefas sempre em português do Bra
           'ferramentas ficam como estão.')
 LEMBRETE = ('valt-ponte: para segunda opinião chame consulta_iniciar (provedor claude, modo investigador, interativo false) '
             'e consulta_status até o estado final no mesmo turno — anunciar não conta. Se um comando for negado pelo hook '
-            'da valt-ponte, faça a consulta indicada na mensagem e não altere ~/.cursor/mcp.json nem hooks.json.')
+            'da valt-ponte, faça a consulta indicada na mensagem e não altere a configuração mcp/hooks da IDE.')
 
 def before_prompt(entrada, conversa):
     texto = str(entrada.get('prompt') or entrada.get('text') or '')
@@ -645,7 +655,7 @@ def stop(entrada, conversa):
     if pediu_sem_consulta(entrada, conversa):
         return {}
     if conversa.d.pop('config_restaurada_em', None):
-        return retomar(conversa, 'Você editou a configuração da valt-ponte (~/.cursor/mcp.json ou hooks.json); o hook restaurou a versão '
+        return retomar(conversa, 'Você editou a configuração da valt-ponte (mcp/hooks da IDE); o hook restaurou a versão '
                        'do instalador. Não altere essa configuração: se a ponte falhar, relate o erro ao usuário.', 'config')
     voltas = max(int(entrada.get('loop_count') or 0), conversa.d.get('retomadas', 0))
     if voltas >= MAX_RETOMADAS or str(entrada.get('status', 'completed')) not in {'completed', 'complete', 'success'}:

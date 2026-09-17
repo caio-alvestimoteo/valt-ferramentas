@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ponte Valt ↔ Cursor MCP ↔ consultor no Ptyxis, sem daemon de boot."""
+"""Ponte Valt ↔ IDE (Cursor, Antigravity) por MCP ↔ consultor no Ptyxis, sem daemon de boot."""
 from __future__ import annotations
 import argparse
 import fcntl
@@ -22,6 +22,13 @@ from ponte_contexto import build, inside, safe_text, stale, SECRET
 VAULT = Path(os.environ.get('VALT', str(Path.home()/'Valt'))).expanduser().resolve()
 SITES = Path(os.environ.get('SITES', str(Path.home()/'Sites'))).expanduser().resolve()
 STATE = Path(os.environ.get('XDG_STATE_HOME', str(Path.home()/'.local/state')))/'valt-ponte'
+# Cada IDE registra o MCP com VALT_PONTE_IDE no env; sem ele vale o Cursor (configuração original).
+IDE = re.sub(r'[^a-z0-9-]', '', os.environ.get('VALT_PONTE_IDE', 'cursor').lower()) or 'cursor'
+NOMES_IDE = {'cursor': 'Cursor', 'antigravity': 'Antigravity'}
+
+def nome_ide(ide=None):
+    ide = ide or IDE
+    return NOMES_IDE.get(ide, ide.capitalize())
 FINAL = {'concluida', 'falhou', 'cancelada', 'expirada'}
 MODOS = {'investigador', 'parecer'}
 PRAZO_ABERTURA = 60
@@ -34,13 +41,13 @@ ERROS_CLI = [
      'Flag desconhecida; a versão da CLI mudou e provider_command precisa de ajuste'),
 ]
 INSTRUCOES_MCP = (
-    'valt-ponte abre Claude ou Codex numa janela do Ptyxis, fora do Cursor, para investigar o '
+    'valt-ponte abre Claude ou Codex numa janela do Ptyxis, fora da IDE, para investigar o '
     'repositório só lendo e devolver um parecer. Anunciar a consulta não conta: chame '
     'consulta_iniciar e depois consulta_status (espera_segundos 25) até estado final, no mesmo turno. '
     'Obrigatório antes de commitar migração sensível, antes da 3ª tentativa com o mesmo erro e na '
-    'revisão final com mais de 20 arquivos. Task e agents internos do Cursor não substituem. '
+    'revisão final com mais de 20 arquivos. Task, subagentes e agentes internos da IDE não substituem. '
     'Se um comando for negado pelo hook da ponte, faça a consulta indicada na mensagem e não altere a configuração '
-    '(~/.cursor/mcp.json, hooks.json). Responda e narre sempre em português do Brasil; identificadores, comandos e '
+    'da ponte (~/.cursor/mcp.json e hooks.json; ~/.gemini/config/mcp_config.json e hooks.json). Responda e narre sempre em português do Brasil; identificadores, comandos e '
     'nomes de arquivo ficam como estão.'
 )
 
@@ -81,8 +88,8 @@ def read_job(id_consulta):
     return json.loads((job_path(id_consulta)/'job.json').read_text())
 
 def registrar(evento, **campos):
-    """Uma linha por evento em chamadas.jsonl: auditoria da ponte sem abrir o Cursor."""
-    linha = {'hora': datetime.now().astimezone().isoformat(timespec='seconds'), 'ferramenta': evento}
+    """Uma linha por evento em chamadas.jsonl: auditoria da ponte sem abrir a IDE."""
+    linha = {'hora': datetime.now().astimezone().isoformat(timespec='seconds'), 'ferramenta': evento, 'ide': IDE}
     linha.update({k: v for k, v in campos.items() if v not in (None, '')})
     try:
         STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -204,7 +211,7 @@ def start(projeto, pergunta, provedor, repositorio='', arquivos=None, interativo
         id_consulta = uuid.uuid4().hex
         data = {'id':id_consulta, 'id_pedido':id_pedido, 'provedor':provedor, 'modo':modo, 'estado':'abrindo',
                 'criada':time.time(), 'prazo':time.time()+1800, 'pacote':pacote,
-                'interativo':interativo, 'arquivos':arquivos or [], 'pid_dono':None}
+                'interativo':interativo, 'arquivos':arquivos or [], 'pid_dono':None, 'ide':IDE}
         write(job_path(id_consulta)/'job.json', data)
         write(job_path(id_consulta)/'contexto.txt', pacote['texto'])
         args = ['ptyxis', '--new-window', '--title', 'Valt · '+provedor+' · '+id_consulta[:8], '--',
@@ -404,7 +411,7 @@ def finish(id_consulta, parecer, lidos=()):
     lidos = [str(item).replace(str(Path.home()), '~') for item in lidos]
     lidos_md = '\n'.join('- `'+curto(item, 200).replace('`', "'")+'`' for item in lidos) or '- (nenhum registro)'
     body = (f"# Consulta {id_consulta}\n\nProvedor: {data['provedor']} · modo: {data.get('modo', 'parecer')}\n\n"
-            f"## Pergunta\n\n{pacote['pergunta']}\n\n## Parecer — aguardando avaliação do Cursor\n\n{parecer}\n\n"
+            f"## Pergunta\n\n{pacote['pergunta']}\n\n## Parecer — aguardando avaliação do {nome_ide(data.get('ide'))}\n\n{parecer}\n\n"
             f"## Fontes consultadas\n\n{fontes}\n")
     if data.get('modo') == 'investigador':
         body += f"\n## Arquivos lidos pelo consultor\n\n{lidos_md}\n"
@@ -465,7 +472,7 @@ def worker(id_consulta):
             if not data['interativo']:
                 break
             mark(id_consulta, estado='aguardando_usuario')
-            print('\nDigite uma pergunta para aprofundar; /devolver retorna ao Cursor; /cancelar cancela.', flush=True)
+            print(f"\nDigite uma pergunta para aprofundar; /devolver retorna ao {nome_ide(data.get('ide'))}; /cancelar cancela.", flush=True)
             line = ler_pergunta(id_consulta)
             if line == '/devolver':
                 break
@@ -476,7 +483,7 @@ def worker(id_consulta):
             if len(prompt)>90000:
                 raise ValueError('Limite de contexto da conversa atingido')
         finish(id_consulta, parecer, lidos)
-        print('\nConclusão disponível ao Cursor. Consulta encerrada.', flush=True)
+        print(f"\nConclusão disponível ao {nome_ide(data.get('ide'))}. Consulta encerrada.", flush=True)
     except (KeyboardInterrupt, EOFError):
         mark(id_consulta, estado='cancelada', erro='Terminal fechado ou consulta cancelada')
     except Exception as exc:
@@ -499,7 +506,7 @@ def tool(name, description, props, required):
 
 TOOLS = [tool('contexto_valt','Leia antes de planejar. Devolve as fontes do projeto (caminho e hash) e o lembrete_consultor com os gatilhos; completo=true inclui o texto das notas. Task interno não substitui o Ptyxis.',
               {**PROPS,'completo':{'type':'boolean','default':False}},['projeto','pergunta']),
-         tool('consulta_iniciar','Única forma de abrir o consultor: janela nova do Ptyxis com Claude ou Codex investigando o repositório só lendo (modo investigador, padrão) ou lendo um dossiê (modo parecer). Task e agents internos do Cursor não contam. Após iniciar, chame consulta_status no mesmo turno até estado final. Não inicia implementação.',
+         tool('consulta_iniciar','Única forma de abrir o consultor: janela nova do Ptyxis com Claude ou Codex investigando o repositório só lendo (modo investigador, padrão) ou lendo um dossiê (modo parecer). Task, subagentes e agentes internos da IDE não contam. Após iniciar, chame consulta_status no mesmo turno até estado final. Não inicia implementação.',
               {**PROPS,'provedor':{'type':'string','enum':['claude','codex']},'interativo':{'type':'boolean','default':False},
                'modo':{'type':'string','enum':['investigador','parecer'],'default':'investigador'},'id_pedido':{'type':'string'}},
               ['projeto','pergunta','provedor','id_pedido']),
@@ -526,7 +533,7 @@ def executar(name, args):
         return start(**args)
     if name == 'consulta_status':
         return status(**args)
-    return mark(args['id_consulta'], estado='cancelada', erro='Cancelada pelo Cursor')['estado']
+    return mark(args['id_consulta'], estado='cancelada', erro='Cancelada pelo '+nome_ide())['estado']
 
 def dispatch(name, args):
     args = args if isinstance(args, dict) else {}

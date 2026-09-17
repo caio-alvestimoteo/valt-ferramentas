@@ -7,16 +7,16 @@ import unicodedata
 from pathlib import Path
 
 STOP = {'como', 'para', 'com', 'uma', 'que', 'dos', 'das', 'por', 'esse', 'essa'}
-DENIED = {'vpn', 'secrets', '.git', '.ssh', '.cursor', '.codex', '.claude',
+DENIED = {'vpn', 'secrets', '.git', '.ssh', '.cursor', '.codex', '.claude', '.gemini', '.agents',
           'node_modules', 'vendor', 'consultas', 'contextos', 'handoffs'}
 EXT = {'.md', '.py', '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.css', '.scss', '.html', '.sh', '.sql', '.json', '.yml', '.yaml', '.toml', '.php', '.vue', '.svelte'}
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})|(?im:^\s*(?:[\w-]*(?:secret|password|token|api_key)[\w-]*)\s*[:=]\s*[\'\"]?[^\s\'\"$<{]{12,})')
 LEMBRETE_CONSULTOR = (
     'Gatilhos: migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
     'revisão final com mais de 20 arquivos. Chame consulta_iniciar (provedor: claude, '
-    'interativo: false) e aguarde consulta_status no mesmo turno — anunciar não conta. Task e agents internos do Cursor não '
-    'substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
-    'Layout Editor não é a ponte.'
+    'interativo: false) e aguarde consulta_status no mesmo turno — anunciar não conta. Task, subagentes e agentes internos '
+    'da IDE (Cursor, Antigravity) não substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
+    'Layout Editor e o navegador do agente não são a ponte.'
 )
 
 def terms(value):

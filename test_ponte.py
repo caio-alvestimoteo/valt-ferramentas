@@ -362,4 +362,26 @@ class PonteTest(unittest.TestCase):
             ponte.worker(jid)
         self.assertEqual(ponte.status(jid)['parecer'],'Rodada 2')
 
+    # --- IDE de origem (Cursor ou Antigravity)
+    def test_ide_no_job_no_log_e_no_registro(self):
+        with patch.object(ponte,'IDE','antigravity'), patch('ponte.shutil.which',return_value='/fake'), \
+             patch.dict(os.environ,{'DISPLAY':':0'}), patch('ponte.subprocess.Popen'):
+            data=ponte.start('Seara/Food','login','claude',id_pedido='ide1')
+            ponte.registrar('consulta_iniciar',id_consulta=data['id'][:8])
+        self.assertEqual(ponte.read_job(data['id'])['ide'],'antigravity')
+        self.assertEqual(self.chamadas()[-1]['ide'],'antigravity')
+        ponte.mark(data['id'],estado='executando'); ponte.finish(data['id'],'ok')
+        self.assertIn('aguardando avaliação do Antigravity',(self.project/'consultas'/f"{data['id']}.md").read_text())
+    def test_ide_padrao_e_cursor(self):
+        jid=self.create_job(); ponte.finish(jid,'ok')
+        self.assertIn('aguardando avaliação do Cursor',(self.project/'consultas'/f'{jid}.md').read_text())
+    def test_cancelamento_cita_a_ide(self):
+        jid=self.create_job()
+        with patch.object(ponte,'IDE','antigravity'):
+            self.assertEqual(ponte.executar('consulta_cancelar',{'id_consulta':jid}),'cancelada')
+        self.assertEqual(ponte.read_job(jid)['erro'],'Cancelada pelo Antigravity')
+    def test_config_das_duas_ides_fora_do_contexto(self):
+        for pasta in ('.gemini','.agents','.cursor'):
+            self.assertIn(pasta, ctx.DENIED)
+
 if __name__=='__main__':unittest.main()

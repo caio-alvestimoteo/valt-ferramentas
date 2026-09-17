@@ -47,7 +47,6 @@ ANUNCIO = re.compile(r'(abrir|iniciar|chamar|disparar|pedir|fazer)\b[^.\n]{0,50}
                      r'|consultar (o )?(claude|codex)\b|segunda opini[aã]o (do|ao|com o|pelo) (claude|codex)'
                      r'|(abrir|iniciar|chamar)\b[^.\n]{0,30}(consulta_iniciar|valt-ponte|o consultor)', re.I)
 CONFIG = re.compile(r'\.cursor/(mcp|hooks)\.json')
-ESCRITA = re.compile(r'sed\s+-i|>|\btee\b|\bmv\b|\bcp\b|\brm\b|\btruncate\b|\bchmod\b|\bln\b|open\([^)]*[\'"][wa]|write_text|\bperl\s+-[a-z]*i')
 MATA_PONTE = re.compile(r'\b(p?kill|killall)\b[^;&|]*(ponte|\b\d+\b)')
 FERRAMENTA = re.compile(r'(consulta_iniciar|consulta_status|consulta_cancelar|contexto_valt)$')
 
@@ -145,9 +144,14 @@ def repo_mapeado(pasta):
     projeto = indice().get(rel)
     return (raiz, rel, projeto) if projeto else None
 
+JANELA_JOBS = 30*24*3600
+
 def jobs():
+    limite = agora() - JANELA_JOBS
     for arquivo in STATE.glob('*/job.json'):
         try:
+            if arquivo.stat().st_mtime < limite:
+                continue  # consultas com mais de 30 dias não cobrem nada e só deixariam o hook lento
             yield json.loads(arquivo.read_text())
         except (OSError, ValueError):
             continue
@@ -381,9 +385,28 @@ def processos_da_ponte():
     saida = subprocess.run(['pgrep', '-f', 'ponte.py (mcp|worker)'], capture_output=True, text=True, timeout=2).stdout
     return set(saida.split())
 
+def escreve_config(comando):
+    """Só quando o destino da escrita é a configuração da ponte (ler ou copiar dela para outro lugar é livre)."""
+    alvo = r'[^;&|]*?\.cursor/(?:mcp|hooks)\.json'
+    for trecho in trechos(comando):
+        if not CONFIG.search(trecho):
+            continue
+        if re.search(r'>{1,2}\s*["\']?[^\s;&|]*\.cursor/(?:mcp|hooks)\.json', trecho):
+            return True
+        if re.search(r'^(?:sudo\s+)?(?:sed\s+-\S*i|perl\s+-\S*i|truncate|chmod|chown|rm|ln|unlink)\b' + alvo, trecho):
+            return True
+        if re.search(r'^(?:sudo\s+)?(?:tee)\b' + alvo, trecho) or re.search(r'\btee\b' + alvo, trecho):
+            return True
+        destino = re.match(r'^(?:sudo\s+)?(?:cp|mv|install|rsync)\b.*\s(\S+)\s*$', trecho)
+        if destino and CONFIG.search(destino.group(1)):
+            return True
+        if re.search(r'\b(?:python3?|node|ruby|jq)\b', trecho) and re.search(r"open\([^)]*,\s*['\"][wa]|write_text|writeFile|>\s*\S*\.cursor|-i\b", trecho):
+            return True
+    return False
+
 def regra_protecao(comando):
     """A configuração da ponte e seus processos não são do agente: nega escrita e kill."""
-    if CONFIG.search(comando) and ESCRITA.search(comando):
+    if escreve_config(comando):
         return negar('alteração da configuração da ponte barrada',
                      'O hook da valt-ponte barrou este comando: ~/.cursor/mcp.json e ~/.cursor/hooks.json são mantidos pelo '
                      'instalador (~/Valt/bootstrap/cursor/ponte-hooks.sh) e não devem ser editados pelo agente. '

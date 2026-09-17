@@ -322,10 +322,12 @@ class HookTest(unittest.TestCase):
     # --- proteção da configuração (agente editou mcp.json e matou o MCP no teste real)
     def test_shell_nao_edita_config(self):
         for c in ['sed -i "s/a/b/" ~/.cursor/mcp.json', 'jq . x > ~/.cursor/hooks.json', 'cp /tmp/x ~/.cursor/mcp.json',
-                  'python3 -c "open(\'/h/.cursor/mcp.json\',\'w\')"']:
+                  'python3 -c "open(\'/h/.cursor/mcp.json\',\'w\')"', 'echo {} | tee ~/.cursor/mcp.json', 'rm ~/.cursor/hooks.json',
+                  'cd ~/.cursor && mv /tmp/y ~/.cursor/mcp.json']:
             self.assertEqual(self.shell(c)['permission'], 'deny', c)
     def test_shell_le_config_livre(self):
-        for c in ['cat ~/.cursor/mcp.json', 'jq . ~/.cursor/hooks.json', 'grep valt ~/.cursor/mcp.json']:
+        for c in ['cat ~/.cursor/mcp.json', 'jq . ~/.cursor/hooks.json', 'grep valt ~/.cursor/mcp.json',
+                  'cat ~/.cursor/mcp.json > /tmp/copia.json', 'cp ~/.cursor/mcp.json /tmp/copia.json', 'jq . ~/.cursor/mcp.json | tee /tmp/x']:
             self.assertEqual(self.shell(c), {}, c)
     def test_nao_mata_processo_da_ponte(self):
         self.assertEqual(self.shell('pkill -f "ponte.py mcp"')['permission'], 'deny')
@@ -412,6 +414,13 @@ class HookTest(unittest.TestCase):
         for i in range(21):
             self.put(self.repo/f'src/g{i}.ts', 'x'); self.evento('afterFileEdit', file_path=str(self.repo/f'src/g{i}.ts'))
         self.assertEqual(self.evento('beforeShellExecution', command='git commit -m x', cwd=str(self.v)), {})
+
+    def test_consulta_antiga_nao_cobre(self):
+        nome, sha = self.stage_migracao()
+        jid = self.job(fontes=[{'arquivo': 'Sites/Pessoais/lab/'+nome, 'sha256': sha}])
+        antigo = time.time() - 31*24*3600
+        import os as _os; _os.utime(self.state/jid/'job.json', (antigo, antigo))
+        self.assertEqual(self.shell('git commit -m x')['permission'], 'deny')
 
 if __name__ == '__main__':
     unittest.main()

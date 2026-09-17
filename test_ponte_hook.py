@@ -24,9 +24,16 @@ class HookTest(unittest.TestCase):
         self.put(self.v/'Pessoais/lab/README.md', 'lab')
         self.git('init', '-q'); self.git('config', 'user.email', 't@t'); self.git('config', 'user.name', 't')
         self.put(self.repo/'README.md', 'x'); self.git('add', '.'); self.git('commit', '-qm', 'base')
-        self.patches = [patch.object(hook, 'VAULT', self.v), patch.object(hook, 'SITES', self.s), patch.object(hook, 'STATE', self.state)]
+        self.planos = raiz/'planos-cursor'
+        self.planos.mkdir()
+        self.patches = [patch.object(hook, 'VAULT', self.v), patch.object(hook, 'SITES', self.s), patch.object(hook, 'STATE', self.state),
+                        # sem isto os testes leriam os planos reais do Cursor em ~/.cursor/plans
+                        patch.object(hook, 'PLANOS_CURSOR', self.planos),
+                        # nenhum teste pode abrir janela de verdade
+                        patch.object(hook, 'abrir_rodada_em_segundo_plano', return_value=True)]
         for p in self.patches:
             p.start()
+        hook._CACHE_INDICE.clear(); hook._CACHE_RAIZ.clear()
         self.state.mkdir()
     def tearDown(self):
         for p in self.patches:
@@ -50,6 +57,19 @@ class HookTest(unittest.TestCase):
                 'pacote': {'projeto': 'Pessoais/lab', 'repositorio': repositorio, 'fontes': list(fontes)}}
         self.put(self.state/jid/'job.json', json.dumps(data))
         return jid
+    def job_rodada(self, id_pedido, estado='concluida', provedor='claude'):
+        jid = hashlib.md5((id_pedido+provedor+str(time.time_ns())).encode()).hexdigest()
+        data = {'id': jid, 'id_pedido': id_pedido, 'provedor': provedor, 'estado': estado,
+                'criada': time.time(),
+                'pacote': {'projeto': 'Pessoais/lab', 'repositorio': 'Pessoais/lab', 'fontes': []}}
+        self.put(self.state/jid/'job.json', json.dumps(data))
+        return jid
+    def criar_plano(self, texto='# Plano\nTrocar o header do site.'):
+        return self.evento('preToolUse', tool_name='CreatePlan', cwd=str(self.repo),
+                           tool_input={'name': 'p', 'plan': texto})
+    def editar(self, alvo='src/app.tsx'):
+        return self.evento('preToolUse', tool_name='Write', cwd=str(self.repo),
+                           tool_input={'file_path': str(self.repo/alvo), 'contents': 'x'})
     def chamadas(self):
         arquivo = self.state/'chamadas.jsonl'
         return [json.loads(l) for l in arquivo.read_text().splitlines()] if arquivo.exists() else []
@@ -208,7 +228,350 @@ class HookTest(unittest.TestCase):
         with patch.object(hook, 'regra_migracao', side_effect=RuntimeError('boom')):
             self.assertEqual(self.rodar_main('beforeShellExecution', json.dumps({'conversation_id': 'c1', 'command': 'git commit', 'cwd': str(self.repo)})), {})
     def test_evento_desconhecido_neutro(self):
-        self.assertEqual(self.rodar_main('sessionStart', '{}'), {})
+        self.assertEqual(self.rodar_main('preCompact', '{}'), {})
+
+    # --- plano (gatilho de entrada)
+    def test_criar_plano_nunca_e_barrado(self):
+        """É o plano que será criticado: barrá-lo impediria o próprio gatilho."""
+        self.assertEqual(self.criar_plano(), {})
+    def test_plano_capturado_barra_a_primeira_edicao(self):
+        self.criar_plano()
+        r = self.editar()
+        self.assertEqual(r['permission'], 'deny')
+        self.assertIn('consulta_dupla', r['agent_message'])
+        self.assertIn('Trocar o header', r['agent_message'])
+    def test_markdown_ainda_e_planejamento(self):
+        self.criar_plano()
+        self.assertEqual(self.editar('notas.md'), {})
+    def test_sem_plano_a_edicao_passa(self):
+        self.assertEqual(self.editar(), {})
+    def test_saida_do_plan_mode_barrada(self):
+        self.criar_plano()
+        r = self.evento('preToolUse', tool_name='SwitchMode', cwd=str(self.repo),
+                        tool_input={'target_mode_id': 'agent'})
+        self.assertEqual(r['permission'], 'deny')
+    def test_saida_do_plan_mode_por_ferramenta_dinamica(self):
+        """O Cursor pode entregar SwitchMode embrulhado em CallDynamicTool."""
+        self.criar_plano()
+        r = self.evento('preToolUse', tool_name='CallDynamicTool', cwd=str(self.repo),
+                        tool_input={'namespace': 'cursor', 'toolName': 'SwitchMode',
+                                    'arguments': {'target_mode_id': 'agent'}})
+        self.assertEqual(r['permission'], 'deny')
+    def test_voltar_para_plan_mode_nao_e_barrado(self):
+        self.criar_plano()
+        r = self.evento('preToolUse', tool_name='SwitchMode', cwd=str(self.repo),
+                        tool_input={'target_mode_id': 'plan'})
+        self.assertEqual(r, {})
+    def test_plano_por_ferramenta_dinamica_e_capturado(self):
+        self.evento('preToolUse', tool_name='CallDynamicTool', cwd=str(self.repo),
+                    tool_input={'namespace': 'cursor', 'toolName': 'create_plan',
+                                'arguments': {'plan': '# Plano dinamico'}})
+        self.assertIn('Plano dinamico', self.editar()['agent_message'])
+    def test_rodada_em_andamento_manda_acompanhar(self):
+        self.criar_plano()
+        pedido = hook.id_da_rodada('# Plano\nTrocar o header do site.')
+        self.job_rodada(pedido, estado='abrindo')
+        r = self.editar()
+        self.assertEqual(r['permission'], 'deny')
+        self.assertIn('consulta_rodada', r['agent_message'])
+        self.assertIn(pedido, r['agent_message'])
+    def test_rodada_concluida_libera_a_implementacao(self):
+        self.criar_plano()
+        pedido = hook.id_da_rodada('# Plano\nTrocar o header do site.')
+        self.job_rodada(pedido, provedor='claude')
+        self.job_rodada(pedido, provedor='codex')
+        self.assertEqual(self.editar(), {})
+    def test_rodada_toda_falha_nao_trava_o_trabalho(self):
+        """Provedor fora do ar (cota, login) não pode deixar a conversa presa para sempre."""
+        self.criar_plano()
+        pedido = hook.id_da_rodada('# Plano\nTrocar o header do site.')
+        self.job_rodada(pedido, estado='falhou', provedor='claude')
+        self.job_rodada(pedido, estado='falhou', provedor='codex')
+        self.assertEqual(self.editar(), {})
+        self.assertTrue(any('sem nenhum parecer' in c.get('mensagem', '') for c in self.chamadas()))
+    def test_commit_liberado_se_a_conferencia_toda_falhar(self):
+        texto = self.liberar_plano()
+        pedido = hook.id_da_rodada(texto, 'confere')
+        self.job_rodada(pedido, estado='falhou', provedor='claude')
+        self.job_rodada(pedido, estado='expirada', provedor='codex')
+        self.assertEqual(self.shell('git commit -m "header"'), {})
+    def test_rodada_em_andamento_ainda_barra(self):
+        """Liberar em falha não pode virar liberar sempre."""
+        self.criar_plano()
+        self.job_rodada(hook.id_da_rodada('# Plano\nTrocar o header do site.'), estado='executando')
+        self.assertEqual(self.editar()['permission'], 'deny')
+    def test_plano_novo_pede_critica_de_novo(self):
+        self.criar_plano()
+        pedido = hook.id_da_rodada('# Plano\nTrocar o header do site.')
+        self.job_rodada(pedido); self.job_rodada(pedido, provedor='codex')
+        self.assertEqual(self.editar(), {})
+        self.criar_plano('# Plano B\nRefazer o rodape.')
+        self.assertEqual(self.editar()['permission'], 'deny')
+    def test_composer_mode_guardado(self):
+        self.evento('sessionStart', composer_mode='plan')
+        conversa = json.loads((self.state/'conversas/c1.json').read_text())
+        self.assertEqual(conversa['composer_mode'], 'plan')
+    def test_sem_consulta_libera_o_plano(self):
+        self.criar_plano()
+        self.evento('beforeSubmitPrompt', prompt='segue assim #sem-consulta')
+        self.assertEqual(self.editar(), {})
+
+    def test_repo_fora_do_indice_mapeia_por_espelhamento(self):
+        """O índice vive desatualizado; o espelhamento Sites↔Valt é a regra do ambiente."""
+        fora = self.s/'Seara/novo'
+        (fora/'.git').mkdir(parents=True)
+        subprocess.run(['git', '-C', str(fora), 'init', '-q'], check=True, capture_output=True)
+        self.put(self.v/'Seara/novo/README.md', 'novo')
+        mapeado = hook.repo_mapeado(fora)
+        self.assertEqual(mapeado[1:], ('Seara/novo', 'Seara/novo'))
+    def test_espelhamento_nao_sobe_para_o_guarda_chuva(self):
+        """Repositório desconhecido não pode herdar a documentação do guarda-chuva."""
+        fora = self.s/'Seara/app/frontend'
+        fora.mkdir(parents=True)
+        subprocess.run(['git', '-C', str(fora), 'init', '-q'], check=True, capture_output=True)
+        self.put(self.v/'Seara/app/README.md', 'app')
+        self.assertIsNone(hook.projeto_espelhado('Seara/app/frontend'))
+        self.assertEqual(hook.projeto_espelhado('Seara/app'), 'Seara/app')
+    def test_espelhamento_ignora_maiusculas(self):
+        """~/Sites/Seara/food espelha ~/Valt/Seara/Food."""
+        self.put(self.v/'Seara/Food/README.md', 'food')
+        self.assertEqual(hook.projeto_espelhado('Seara/food'), 'Seara/Food')
+    def test_caminho_de_documentacao_sobe_ate_o_projeto(self):
+        """Aqui subir é certo: o plano cita um arquivo, não um repositório."""
+        self.put(self.v/'Pessoais/lab/Operacao/nota.md', 'x')
+        self.assertEqual(hook.projeto_do_caminho_valt('Pessoais/lab/Operacao/nota.md'), 'Pessoais/lab')
+    def test_sem_documentacao_no_valt_nao_mapeia(self):
+        fora = self.s/'Seara/orfao'
+        fora.mkdir(parents=True)
+        subprocess.run(['git', '-C', str(fora), 'init', '-q'], check=True, capture_output=True)
+        self.assertIsNone(hook.repo_mapeado(fora))
+    def test_rodada_que_falhou_nao_conta_no_teto(self):
+        for _ in range(hook.TETO_RODADAS_HORA):
+            hook.registrar('hook_abriu_rodada', ok=False, mensagem='falhou')
+        self.assertEqual(hook.rodadas_na_ultima_hora(), 0)
+        _, abriu = self.parar(self.transcricao_com_plano())
+        self.assertTrue(abriu.chamou_agora)
+
+    # --- o hook abre a rodada sozinho
+    def transcricao_com_plano(self, texto='# Plano\nTrocar o header.', nome='CreatePlan'):
+        arquivo = Path(self.tmp.name)/'transcript.jsonl'
+        linhas = [json.dumps({'role': 'user', 'message': {'content': [{'type': 'text', 'text': 'planeja'}]}}),
+                  json.dumps({'role': 'assistant', 'message': {'content': [
+                      {'type': 'text', 'text': 'segue o plano'},
+                      {'type': 'tool_use', 'name': nome, 'input': {'name': 'p', 'plan': texto}}]}})]
+        arquivo.write_text('\n'.join(linhas))
+        return str(arquivo)
+    def parar(self, transcricao=None, **extra):
+        abriu = hook.abrir_rodada_em_segundo_plano
+        antes = abriu.call_count
+        r = self.evento('stop', status='completed', transcript_path=transcricao,
+                        workspace_roots=[str(self.repo)], **extra)
+        abriu.chamou_agora = abriu.call_count > antes
+        return r, abriu
+    def test_alvo_vem_do_caminho_citado_no_plano(self):
+        """Plano transversal não tem repositório aberto, mas nomeia os que toca."""
+        class C: d = {'editados': {}}
+        alvo = hook.alvo_do_plano({'workspace_roots': [str(self.v)]}, C(),
+                                  'mexe em `~/Sites/Pessoais/lab` hoje')
+        self.assertEqual(alvo, ('Pessoais/lab', 'Pessoais/lab'))
+    def test_plano_so_de_documentacao_roda_sem_repositorio(self):
+        class C: d = {'editados': {}}
+        alvo = hook.alvo_do_plano({'workspace_roots': []}, C(), 'revisar ~/Valt/Pessoais/lab/README.md')
+        self.assertEqual(alvo, ('Pessoais/lab', ''))
+    def test_workspace_do_valt_serve_de_projeto(self):
+        class C: d = {'editados': {}}
+        alvo = hook.alvo_do_plano({'workspace_roots': [str(self.v/'Pessoais/lab')]}, C(), 'plano sem caminhos')
+        self.assertEqual(alvo, ('Pessoais/lab', ''))
+    def test_plano_sem_alvo_nenhum_nao_abre(self):
+        class C: d = {'editados': {}}
+        self.assertIsNone(hook.alvo_do_plano({'workspace_roots': [self.tmp.name]}, C(), 'plano solto'))
+    def test_repositorio_aberto_vence_o_citado(self):
+        class C: d = {'editados': {}}
+        alvo = hook.alvo_do_plano({'workspace_roots': [str(self.repo)]}, C(),
+                                  'cita `~/Sites/Outro/outro` mas o aberto e o lab')
+        self.assertEqual(alvo[1], 'Pessoais/lab')
+    def test_plano_novo_abre_a_rodada_sozinho(self):
+        r, abriu = self.parar(self.transcricao_com_plano())
+        self.assertTrue(abriu.called)
+        projeto, repo_rel, plano, _pergunta = abriu.call_args.args
+        self.assertEqual((projeto, repo_rel), ('Pessoais/lab', 'Pessoais/lab'))
+        self.assertIn('Trocar o header.', plano)
+        self.assertIn('abriu Claude e Codex', r['followup_message'])
+    def test_plano_capturado_mesmo_sem_hook_de_createplan(self):
+        """O Cursor 3.20 não dispara preToolUse para CreatePlan: o plano vem da transcrição."""
+        entrada = {'transcript_path': self.transcricao_com_plano('# Plano B\nRefazer.')}
+        self.assertIn('Refazer.', hook.plano_da_transcricao(entrada))
+    def test_plano_por_ferramenta_dinamica_na_transcricao(self):
+        arquivo = Path(self.tmp.name)/'t2.jsonl'
+        arquivo.write_text(json.dumps({'role': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'name': 'CallDynamicTool',
+             'input': {'toolName': 'create_plan', 'arguments': {'plan': '# Dinamico'}}}]}}))
+        self.assertIn('Dinamico', hook.plano_da_transcricao({'transcript_path': str(arquivo)}))
+    def test_teto_nao_silencia_o_plano_para_sempre(self):
+        """Falha transitória não pode marcar o plano como visto."""
+        t = self.transcricao_com_plano()
+        for _ in range(hook.TETO_RODADAS_HORA):
+            hook.registrar('hook_abriu_rodada', ok=True)
+        _, abriu = self.parar(t)
+        self.assertFalse(abriu.chamou_agora)
+        (self.state/'chamadas.jsonl').write_text('')  # passou a hora
+        _, abriu = self.parar(t)
+        self.assertTrue(abriu.chamou_agora)
+    def test_alvo_ausente_nao_silencia_o_plano(self):
+        t = self.transcricao_com_plano()
+        abriu = hook.abrir_rodada_em_segundo_plano
+        self.evento('stop', status='completed', transcript_path=t, workspace_roots=[self.tmp.name])
+        self.assertFalse(abriu.called)
+        _, abriu = self.parar(t)  # agora com workspace bom
+        self.assertTrue(abriu.called)
+    def test_mesmo_plano_nao_reabre(self):
+        """Quem impede a reabertura é a rodada existir no disco, não uma marca na conversa."""
+        t = self.transcricao_com_plano()
+        self.parar(t)
+        self.job_rodada(hook.id_da_rodada('# Plano\nTrocar o header.'), estado='executando')
+        _, abriu = self.parar(t)
+        self.assertFalse(abriu.chamou_agora)
+    def test_filho_que_falha_e_tentado_de_novo(self):
+        """O Popen só garante o spawn: se o filho morre, nenhum job aparece e o turno seguinte tenta."""
+        t = self.transcricao_com_plano()
+        _, abriu = self.parar(t)
+        self.assertTrue(abriu.chamou_agora)
+        _, abriu = self.parar(t)
+        self.assertTrue(abriu.chamou_agora)
+    def test_tentativas_tem_limite(self):
+        """Falha permanente não pode virar laço de spawn a cada turno."""
+        t = self.transcricao_com_plano()
+        for _ in range(hook.MAX_TENTATIVAS_RODADA):
+            self.parar(t)
+        _, abriu = self.parar(t)
+        self.assertFalse(abriu.chamou_agora)
+    def test_plano_diferente_abre_de_novo(self):
+        self.parar(self.transcricao_com_plano())
+        _, abriu = self.parar(self.transcricao_com_plano('# Plano B\nOutra coisa.'))
+        self.assertTrue(abriu.chamou_agora)
+    def test_rodada_ja_aberta_pelo_agente_nao_duplica(self):
+        texto = '# Plano\nTrocar o header.'
+        self.job_rodada(hook.id_da_rodada(texto), estado='abrindo')
+        _, abriu = self.parar(self.transcricao_com_plano(texto))
+        self.assertFalse(abriu.chamou_agora)
+    def test_teto_por_hora_segura(self):
+        for _ in range(hook.TETO_RODADAS_HORA):
+            hook.registrar('hook_abriu_rodada')
+        _, abriu = self.parar(self.transcricao_com_plano())
+        self.assertFalse(abriu.chamou_agora)
+        self.assertTrue(any('teto' in c.get('mensagem', '') for c in self.chamadas()))
+    def test_rodada_velha_nao_conta_no_teto(self):
+        antiga = {'hora': '2020-01-01T10:00:00-03:00', 'ferramenta': 'hook_abriu_rodada'}
+        (self.state/'chamadas.jsonl').write_text(json.dumps(antiga)+'\n')
+        self.assertEqual(hook.rodadas_na_ultima_hora(), 0)
+    def test_sem_repositorio_mapeado_nao_abre(self):
+        abriu = hook.abrir_rodada_em_segundo_plano
+        self.evento('stop', status='completed', transcript_path=self.transcricao_com_plano(),
+                    workspace_roots=[self.tmp.name])
+        self.assertFalse(abriu.called)
+    def test_turno_sem_plano_nao_abre(self):
+        arquivo = Path(self.tmp.name)/'vazio.jsonl'
+        arquivo.write_text(json.dumps({'role': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'oi'}]}}))
+        _, abriu = self.parar(str(arquivo))
+        self.assertFalse(abriu.chamou_agora)
+    def test_sem_consulta_impede_a_abertura_automatica(self):
+        self.evento('beforeSubmitPrompt', prompt='deixa quieto #sem-consulta')
+        _, abriu = self.parar(self.transcricao_com_plano())
+        self.assertFalse(abriu.chamou_agora)
+    def test_plano_do_disco_exige_janela_de_tempo(self):
+        (self.planos/'x.plan.md').write_text('# Plano de outra conversa')
+        self.assertEqual(hook.plano_do_disco(0), '')
+        self.assertIn('outra conversa', hook.plano_do_disco(time.time()-60))
+
+    def job_com_parecer(self, id_pedido, provedor, parecer):
+        jid = hashlib.md5((id_pedido+provedor).encode()).hexdigest()
+        self.put(self.state/jid/'job.json', json.dumps({
+            'id': jid, 'id_pedido': id_pedido, 'provedor': provedor, 'estado': 'concluida',
+            'criada': time.time(), 'parecer': parecer, 'registro': f'~/Valt/x/{jid}.md',
+            'pacote': {'projeto': 'Pessoais/lab', 'repositorio': 'Pessoais/lab', 'fontes': []}}))
+    def test_pareceres_chegam_ao_chat_sem_o_agente_pedir(self):
+        texto = '# Plano\nTrocar o header.'
+        self.parar(self.transcricao_com_plano(texto))
+        pedido = hook.id_da_rodada(texto)
+        self.job_com_parecer(pedido, 'claude', 'o plano ignora o tema')
+        self.job_com_parecer(pedido, 'codex', 'falta teste de contraste')
+        r = self.evento('beforeSubmitPrompt', prompt='pode implementar')
+        contexto = r['additional_context']
+        self.assertIn('o plano ignora o tema', contexto)
+        self.assertIn('falta teste de contraste', contexto)
+        self.assertIn('Parecer do claude', contexto)
+    def test_pareceres_entregues_uma_vez_so(self):
+        texto = '# Plano\nTrocar o header.'
+        self.parar(self.transcricao_com_plano(texto))
+        self.job_com_parecer(hook.id_da_rodada(texto), 'claude', 'atencao ao tema')
+        self.evento('beforeSubmitPrompt', prompt='vai')
+        segundo = self.evento('beforeSubmitPrompt', prompt='vai de novo')
+        self.assertNotIn('atencao ao tema', segundo['additional_context'])
+    def test_entrega_libera_a_trava_da_implementacao(self):
+        texto = '# Plano\nTrocar o header.'
+        self.parar(self.transcricao_com_plano(texto))
+        self.assertEqual(self.editar()['permission'], 'deny')
+        self.job_com_parecer(hook.id_da_rodada(texto), 'claude', 'ok com ressalvas')
+        self.evento('beforeSubmitPrompt', prompt='implementa')
+        self.assertEqual(self.editar(), {})
+    def test_rodada_incompleta_nao_entrega(self):
+        texto = '# Plano\nTrocar o header.'
+        self.parar(self.transcricao_com_plano(texto))
+        self.job_rodada(hook.id_da_rodada(texto), estado='executando')
+        r = self.evento('beforeSubmitPrompt', prompt='e ai')
+        self.assertNotIn('Parecer do', r['additional_context'])
+
+    # --- conferência final (gatilho de saída)
+    def liberar_plano(self, texto='# Plano\nTrocar o header do site.'):
+        """Plano criticado: a rodada de entrada terminou."""
+        self.criar_plano(texto)
+        pedido = hook.id_da_rodada(texto)
+        self.job_rodada(pedido); self.job_rodada(pedido, provedor='codex')
+        self.editar()  # marca plano_criticado
+        return texto
+    def test_commit_apos_plano_pede_conferencia(self):
+        texto = self.liberar_plano()
+        r = self.shell('git commit -m "header"')
+        self.assertEqual(r['permission'], 'deny')
+        self.assertIn('conferência final', r['user_message'])
+        self.assertIn(hook.id_da_rodada(texto, 'confere'), r['agent_message'])
+    def test_conferencia_abre_sozinha_no_commit(self):
+        """Esperar o agente chamar é a premissa que falhou o dia inteiro."""
+        texto = self.liberar_plano()
+        abriu = hook.abrir_rodada_em_segundo_plano
+        r = self.shell('git commit -m "header"')
+        self.assertTrue(abriu.called)
+        self.assertEqual(abriu.call_args.args[4] if len(abriu.call_args.args) > 4 else abriu.call_args.args[-1], 'confere')
+        self.assertEqual(r['permission'], 'deny')
+        self.assertIn('acabou de ser aberta', r['agent_message'])
+        self.assertIn(hook.id_da_rodada(texto, 'confere'), r['agent_message'])
+    def test_conferencia_nao_reabre_a_cada_commit(self):
+        self.liberar_plano()
+        abriu = hook.abrir_rodada_em_segundo_plano
+        antes = abriu.call_count
+        for _ in range(hook.MAX_TENTATIVAS_RODADA + 2):
+            self.shell('git commit -m "x"')
+        self.assertEqual(abriu.call_count - antes, hook.MAX_TENTATIVAS_RODADA)
+    def test_conferencia_concluida_libera_o_commit(self):
+        texto = self.liberar_plano()
+        pedido = hook.id_da_rodada(texto, 'confere')
+        self.job_rodada(pedido); self.job_rodada(pedido, provedor='codex')
+        self.assertEqual(self.shell('git commit -m "header"'), {})
+    def test_conferencia_em_andamento_manda_acompanhar(self):
+        texto = self.liberar_plano()
+        self.job_rodada(hook.id_da_rodada(texto, 'confere'), estado='abrindo')
+        r = self.shell('git commit -m "header"')
+        self.assertIn('consulta_rodada', r['agent_message'])
+    def test_commit_sem_plano_nao_pede_conferencia(self):
+        self.assertEqual(self.shell('git commit -m "x"'), {})
+    def test_plano_nao_criticado_nao_chega_na_conferencia(self):
+        """Antes da crítica o commit cai na regra de entrada, não na de saída."""
+        self.criar_plano()
+        r = self.shell('git commit -m "x"')
+        self.assertEqual(r, {})  # a trava de entrada é na edição, não no commit
+    def test_rodada_de_entrada_e_de_saida_sao_distintas(self):
+        texto = '# Plano\nTrocar o header do site.'
+        self.assertNotEqual(hook.id_da_rodada(texto), hook.id_da_rodada(texto, 'confere'))
 
     # --- contrato real (entradas capturadas do Cursor 3.18.25)
     def fixtures(self, evento):

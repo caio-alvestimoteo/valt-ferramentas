@@ -132,20 +132,29 @@ def pre_tool(entrada):
         return {'decision': 'deny', 'reason': r.get('user_message') or r.get('agent_message') or 'valt-ponte: barrado'}
     return {}
 
+POR_PEDIDO = ('consulta_iniciar', 'consulta_dupla', 'consulta_rodada')
+
 def resultado_mcp(nome, args):
-    """Estado da consulta lido do job (o PostToolUse não traz o resultado da ferramenta)."""
-    job = None
-    if nome.endswith('consulta_iniciar') and args.get('id_pedido'):
-        for candidato in nucleo.jobs():
-            if candidato.get('id_pedido') == args['id_pedido']:
-                job = candidato
-                break
+    """Estado da consulta lido do job (o PostToolUse não traz o resultado da ferramenta).
+
+    consulta_dupla e consulta_rodada trabalham por id_pedido e abrem DUAS consultas: sem
+    devolver os dois ids, o núcleo não registra `chamou_em` e retoma o agente no fim do turno
+    dizendo que ele anunciou e não chamou — mesmo tendo chamado."""
+    jobs = []
+    if any(nome.endswith(alvo) for alvo in POR_PEDIDO) and args.get('id_pedido'):
+        jobs = [j for j in nucleo.jobs() if j.get('id_pedido') == args['id_pedido']]
     elif re.fullmatch(r'[a-f0-9]{32}', str(args.get('id_consulta') or '')):
         try:
-            job = json.loads((nucleo.STATE/args['id_consulta']/'job.json').read_text())
+            jobs = [json.loads((nucleo.STATE/args['id_consulta']/'job.json').read_text())]
         except (OSError, ValueError):
-            job = None
-    return json.dumps({'id': job['id'], 'estado': job.get('estado')}) if job and job.get('id') else json.dumps({'error': 'consulta não encontrada'})
+            jobs = []
+    jobs = [j for j in jobs if j.get('id')]
+    if not jobs:
+        return json.dumps({'error': 'consulta não encontrada'})
+    if len(jobs) == 1:
+        return json.dumps({'id': jobs[0]['id'], 'estado': jobs[0].get('estado')})
+    return json.dumps({'consultas': [{'id': j['id'], 'provedor': j.get('provedor'),
+                                      'estado': j.get('estado')} for j in sorted(jobs, key=lambda j: j['id'])]})
 
 def post_tool(entrada):
     nome, args = argumentos(entrada)

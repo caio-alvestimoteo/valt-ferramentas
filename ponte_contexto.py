@@ -12,8 +12,9 @@ DENIED = {'vpn', 'secrets', '.git', '.ssh', '.cursor', '.codex', '.claude', '.ge
 EXT = {'.md', '.py', '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs', '.css', '.scss', '.html', '.sh', '.sql', '.json', '.yml', '.yaml', '.toml', '.php', '.vue', '.svelte'}
 SECRET = re.compile(r'-----BEGIN .*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,})|(?im:^\s*(?:[\w-]*(?:secret|password|token|api_key)[\w-]*)\s*[:=]\s*[\'\"]?[^\s\'\"$<{]{12,})')
 LEMBRETE_CONSULTOR = (
-    'Gatilhos: migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
-    'revisão final com mais de 20 arquivos. Chame consulta_iniciar (provedor: claude, '
+    'Gatilhos: plano feito, antes de implementar (consulta_dupla + consulta_rodada); conferência final '
+    'antes do commit; migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
+    'revisão final com mais de 20 arquivos. Para um provedor só, chame consulta_iniciar (provedor: claude, '
     'interativo: false) e aguarde consulta_status no mesmo turno — anunciar não conta. Task, subagentes e agentes internos '
     'da IDE (Cursor, Antigravity) não substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
     'Layout Editor e o navegador do agente não são a ponte.'
@@ -53,9 +54,18 @@ def git_state(repo: Path):
     return {'head': run('rev-parse', 'HEAD'), 'branch': run('branch', '--show-current'),
             'sujo': bool(run('status', '--porcelain'))}
 
-def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: str = '', arquivos=None):
+LIMITE_PLANO = 40000
+
+def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: str = '', arquivos=None, plano: str = ''):
     if not pergunta.strip() or len(pergunta) > 12000:
         raise ValueError('Pergunta obrigatória, até 12000 caracteres')
+    # O plano da IDE não cabe em `pergunta` (12k) e é a peça central da crítica: campo próprio,
+    # fora do orçamento das notas, para não competir com o contexto do projeto.
+    plano = (plano or '').strip()
+    if len(plano) > LIMITE_PLANO:
+        raise ValueError(f'Plano acima de {LIMITE_PLANO} caracteres; envie o trecho que importa')
+    if plano and SECRET.search(plano):
+        raise ValueError('Plano contém possível segredo')
     scope = inside(vault, projeto)
     if not scope.is_dir() or scope == vault.resolve() or not (scope / 'README.md').is_file():
         pai = scope.parent
@@ -72,8 +82,15 @@ def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: st
     if repo_path:
         index = (vault/'indices/repositorios.md').read_text(encoding='utf-8')
         related = [line for line in index.splitlines() if '`~/Sites/'+repositorio+'`' in line]
-        if not any('../'+projeto+'/' in line for line in related):
-            raise ValueError('Projeto e repositório não correspondem no índice do Valt')
+        # O índice é um atalho e vive desatualizado (ricca e gradina não estavam lá em 17/09,
+        # com documentação pronta no Valt). O espelhamento Sites↔Valt é a regra do ambiente:
+        # vale quando o projeto é o MESMO caminho do repositório (maiúsculas à parte, porque
+        # ~/Sites/Seara/food espelha ~/Valt/Seara/Food). Aceitar ancestral deixaria qualquer
+        # repositório de um guarda-chuva passar pela documentação de outro.
+        espelhado = repositorio.lower() == projeto.lower()
+        if not any('../'+projeto+'/' in line for line in related) and not espelhado:
+            raise ValueError('Projeto e repositório não correspondem no índice do Valt '
+                             'nem pelo caminho espelhado')
     candidates, avisos = [], []
     mandatory = [vault/'AGENTS.md', vault/'CLAUDE.md', scope/'README.md', scope/'Repositorio/mapa-repositorio.md']
     # Diário da raiz é filtrado por tarefa/projeto; não escolher simplesmente a primeira entrada.
@@ -127,9 +144,11 @@ def build(vault: Path, sites: Path, projeto: str, pergunta: str, repositorio: st
         add('Sites/'+repositorio+'/'+rel, content, path, len(content))
     if not fontes:
         raise ValueError('Nenhuma fonte utilizável')
+    if plano:
+        blocks.insert(0, '### Plano da IDE (objeto da crítica)\n'+plano)
     return {'projeto': projeto, 'repositorio': repositorio, 'pergunta': pergunta, 'fontes': fontes,
             'estado_git': git_state(repo_path) if repo_path else None,
-            'avisos': avisos, 'texto': '\n\n'.join(blocks),
+            'avisos': avisos, 'texto': '\n\n'.join(blocks), 'plano': plano,
             'lembrete_consultor': LEMBRETE_CONSULTOR}
 
 def stale(pacote, vault, sites):

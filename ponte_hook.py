@@ -55,7 +55,13 @@ INSTALADORES = {'cursor': 'bootstrap/cursor/ponte-hooks.sh', 'antigravity': 'boo
 AVISO_CONFIG = ('~/.cursor/mcp.json e hooks.json (Cursor) e ~/.gemini/config/mcp_config.json e hooks.json (Antigravity) '
                 'são mantidos pelos instaladores em ~/Valt/bootstrap/<ide>/ponte-hooks.sh')
 MATA_PONTE = re.compile(r'\b(p?kill|killall)\b[^;&|]*(ponte|\b\d+\b)')
-FERRAMENTA = re.compile(r'(consulta_iniciar|consulta_status|consulta_cancelar|contexto_valt)$')
+FERRAMENTA = re.compile(r'(consulta_iniciar|consulta_dupla|consulta_rodada|consulta_status|consulta_cancelar|contexto_valt)$')
+# O nome da ferramenta de plano muda por família de modelo (CreatePlan/create_plan/mcp_create_plan).
+CRIA_PLANO = re.compile(r'^(create_?plan|mcp_create_plan)$', re.I)
+TROCA_MODO = re.compile(r'^switch_?mode$', re.I)
+# Em Plan mode o Cursor só deixa editar markdown; escrita fora disso é a implementação começando.
+MARKDOWN = re.compile(r'\.(md|markdown|mdx)$', re.I)
+LIMITE_PLANO_HOOK = 40000
 
 def agora():
     return time.time()
@@ -114,19 +120,34 @@ def git(repo, *args, binario=False):
         return None
     return r.stdout if binario else r.stdout.decode('utf-8', errors='replace')
 
+_CACHE_RAIZ = {}
+
 def raiz_git(pasta):
+    """Raiz do repositório, memorizada por processo.
+
+    `alvo_do_plano` testa várias candidatas em toda escrita não-markdown; sem cache cada uma
+    custava um subprocess `git rev-parse` com timeout de 3 s, dentro do alarme de LIMITE_S."""
     if not pasta:
         return None
-    saida = git(pasta, 'rev-parse', '--show-toplevel')
-    return Path(saida.strip()).resolve() if saida else None
+    chave = str(pasta)
+    if chave not in _CACHE_RAIZ:
+        saida = git(pasta, 'rev-parse', '--show-toplevel')
+        _CACHE_RAIZ[chave] = Path(saida.strip()).resolve() if saida else None
+    return _CACHE_RAIZ[chave]
+
+_CACHE_INDICE = {}
 
 def indice():
-    """{repositorio relativo a Sites: projeto do Valt} a partir de indices/repositorios.md."""
+    """{repositorio relativo a Sites: projeto do Valt} a partir de indices/repositorios.md.
+
+    Memorizado por processo: o hook é um processo curto e relia o arquivo por candidata."""
+    if 'mapa' in _CACHE_INDICE:
+        return _CACHE_INDICE['mapa']
     mapa = {}
     try:
         texto = (VAULT/'indices/repositorios.md').read_text(encoding='utf-8')
     except OSError:
-        return mapa
+        return mapa  # sem índice o espelhamento ainda resolve; não memoriza a falha
     raiz = VAULT.resolve()
     for linha in texto.splitlines():
         repo = re.search(r'`~/Sites/([^`{}]+)`', linha)
@@ -140,15 +161,57 @@ def indice():
             if pasta != raiz and pasta.is_relative_to(raiz):
                 mapa.setdefault(repo.group(1).rstrip('/'), pasta.relative_to(raiz).as_posix())
                 break
+    _CACHE_INDICE['mapa'] = mapa
     return mapa
 
+def projeto_espelhado(rel):
+    """As quatro árvores compartilham o caminho relativo: ~/Sites/Seara/ricca ↔ ~/Valt/Seara/ricca.
+
+    O índice é um atalho e vive desatualizado (ricca e gradina não estavam lá em 17/09,
+    embora tivessem documentação). O espelhamento é a regra do ambiente e não caduca.
+
+    Exige o caminho COMPLETO: subir para o ancestral faria todo repositório desconhecido de
+    ~/Sites/Seara virar projeto "Seara" (existe README lá), montando o dossiê sobre a
+    documentação errada e fazendo a trava por projeto colidir entre repositórios diferentes.
+    A comparação ignora maiúsculas porque ~/Sites/Seara/food espelha ~/Valt/Seara/Food."""
+    alvo = Path(rel)
+    if (VAULT/alvo/'README.md').is_file():
+        return alvo.as_posix()
+    pasta = VAULT.resolve()
+    partes = []
+    for parte in alvo.parts:
+        achado = next((f.name for f in pasta.iterdir() if f.is_dir() and f.name.lower() == parte.lower()), None) \
+            if pasta.is_dir() else None
+        if not achado:
+            return None
+        partes.append(achado)
+        pasta = pasta/achado
+    return '/'.join(partes) if (pasta/'README.md').is_file() else None
+
+def projeto_do_caminho_valt(rel):
+    """Projeto dono de um caminho JÁ dentro do Valt: sobe até a pasta com README.
+
+    Diferente de `projeto_espelhado`, aqui subir é correto — o plano cita um arquivo de
+    documentação (`~/Valt/Seara/ricca/Operacao/nota.md`) e queremos o projeto dele, não uma
+    correspondência com repositório.
+    """
+    pasta = (VAULT/rel).resolve()
+    raiz = VAULT.resolve()
+    if not pasta.is_relative_to(raiz):
+        return None
+    while pasta != raiz:
+        if (pasta/'README.md').is_file():
+            return pasta.relative_to(raiz).as_posix()
+        pasta = pasta.parent
+    return None
+
 def repo_mapeado(pasta):
-    """(raiz, repositorio relativo, projeto) se a pasta é de um repositório do índice; senão None."""
+    """(raiz, repositorio relativo, projeto) se a pasta é de um repositório conhecido; senão None."""
     raiz = raiz_git(pasta)
     if not raiz or not raiz.is_relative_to(SITES):
         return None
     rel = raiz.relative_to(SITES).as_posix()
-    projeto = indice().get(rel)
+    projeto = indice().get(rel) or projeto_espelhado(rel)
     return (raiz, rel, projeto) if projeto else None
 
 JANELA_JOBS = 30*24*3600
@@ -186,6 +249,211 @@ def sensivel(conteudo):
 
 def eh_migracao(caminho):
     return caminho.endswith('.sql')
+
+TETO_RODADAS_HORA = 6
+MAX_TENTATIVAS_RODADA = 2
+PLANOS_CURSOR = Path.home()/'.cursor/plans'
+
+LIMITE_TRANSCRICAO = 2_000_000
+
+def linhas_da_transcricao(caminho):
+    """Linhas da transcrição, lidas uma vez por evento e com teto.
+
+    Sem o teto, uma conversa longa (transcrições do Cursor chegam a dezenas de MB) estoura o
+    alarme de LIMITE_S e derruba TODAS as regras do stop em silêncio — inclusive a rodada
+    automática. Só o fim do arquivo interessa: o plano e o #sem-consulta são recentes."""
+    if not caminho:
+        return []
+    arquivo = Path(caminho)
+    try:
+        if not arquivo.is_file():
+            return []
+        with arquivo.open('rb') as fonte:
+            tamanho = arquivo.stat().st_size
+            if tamanho > LIMITE_TRANSCRICAO:
+                fonte.seek(tamanho - LIMITE_TRANSCRICAO)
+                fonte.readline()  # descarta a linha partida ao meio
+            bruto = fonte.read()
+    except OSError:
+        return []
+    return bruto.decode('utf-8', errors='replace').splitlines()
+
+def itens_da_transcricao(caminho):
+    for linha in linhas_da_transcricao(caminho):
+        try:
+            yield json.loads(linha)
+        except ValueError:
+            continue
+
+def blocos_da_transcricao(caminho, itens=None):
+    """Blocos tool_use da transcrição, na ordem em que aconteceram."""
+    for item in (itens if itens is not None else itens_da_transcricao(caminho)):
+        conteudo = (item.get('message') or {}).get('content')
+        if not isinstance(conteudo, list):
+            continue
+        for bloco in conteudo:
+            if isinstance(bloco, dict) and bloco.get('type') == 'tool_use':
+                yield bloco
+
+def plano_da_transcricao(entrada, itens=None):
+    """O plano mais recente da conversa, lido da transcrição.
+
+    O Cursor 3.20 não dispara hook para CreatePlan (só Read, Grep e Shell chegam ao
+    preToolUse), mas a transcrição registra a chamada com o plano inteiro."""
+    achado = ''
+    for bloco in blocos_da_transcricao(entrada.get('transcript_path'), itens):
+        nome = str(bloco.get('name') or '')
+        argumentos = bloco.get('input') if isinstance(bloco.get('input'), dict) else {}
+        if not CRIA_PLANO.match(nome):
+            # Ferramenta dinâmica: o nome real vai em input.toolName.
+            if not CRIA_PLANO.match(str(argumentos.get('toolName') or '')):
+                continue
+            argumentos = argumentos.get('arguments') if isinstance(argumentos.get('arguments'), dict) else argumentos
+        for campo in ('plan', 'plano', 'content'):
+            texto = argumentos.get(campo)
+            if isinstance(texto, str) and texto.strip():
+                achado = texto.strip()[:LIMITE_PLANO_HOOK]
+    return achado
+
+def plano_do_disco(desde):
+    """Rede de segurança: o Cursor materializa cada plano em ~/.cursor/plans/*.plan.md.
+
+    Exige uma janela de tempo: sem o início do turno, o mais recente poderia ser de outra
+    conversa — ou de outra janela do Cursor — e a rodada sairia sobre o plano errado."""
+    if not desde:
+        return ''
+    try:
+        recentes = [p for p in PLANOS_CURSOR.glob('*.plan.md') if p.stat().st_mtime >= desde]
+    except OSError:
+        return ''
+    if not recentes:
+        return ''
+    mais_novo = max(recentes, key=lambda p: p.stat().st_mtime)
+    try:
+        return mais_novo.read_text(encoding='utf-8', errors='replace')[:LIMITE_PLANO_HOOK].strip()
+    except OSError:
+        return ''
+
+def rodadas_na_ultima_hora():
+    limite = agora() - 3600
+    total = 0
+    # O arquivo é append-only e nunca rotacionado: ler só a cauda, não os meses todos.
+    try:
+        with (STATE/'chamadas.jsonl').open('rb') as fonte:
+            tamanho = fonte.seek(0, os.SEEK_END)
+            fonte.seek(max(0, tamanho - 200_000))
+            linhas = fonte.read().decode('utf-8', errors='replace').splitlines()
+    except OSError:
+        return 0
+    for linha in reversed(linhas[-400:]):
+        try:
+            item = json.loads(linha)
+        except ValueError:
+            continue
+        if item.get('ferramenta') != 'hook_abriu_rodada' or item.get('ok') is False:
+            continue  # rodada que falhou não consumiu cota nem janela
+        try:
+            quando = datetime.fromisoformat(item['hora']).timestamp()
+        except (KeyError, ValueError):
+            continue
+        if quando >= limite:
+            total += 1
+    return total
+
+def abrir_rodada_em_segundo_plano(projeto, repo_rel, plano, pergunta, prefixo='plano'):
+    """Dispara a ponte fora do processo do hook: aqui só há orçamento de milissegundos."""
+    pedido = {'projeto': projeto, 'repositorio': repo_rel, 'pergunta': pergunta,
+              'plano': plano[:LIMITE_PLANO_HOOK], 'id_pedido': id_da_rodada(plano, prefixo)}
+    try:
+        subprocess.Popen([sys.executable, str(Path(__file__).resolve().parent/'ponte.py'),
+                          'rodada-automatica', json.dumps(pedido, ensure_ascii=False)],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return True
+    except OSError:
+        return False
+
+def trocar_plano(conversa, plano):
+    """Plano novo recomeça o ciclo: crítica, entrega dos pareceres e conferência final.
+
+    Sem zerar as três marcas, o segundo plano de uma conversa não recebe pareceres
+    (`pareceres_entregues`) e o commit dele passa sem conferência (`plano_conferido`)."""
+    if conversa.d.get('plano') == plano:
+        return False
+    conversa.d['plano'] = plano
+    for marca in ('plano_criticado', 'pareceres_entregues', 'plano_conferido'):
+        conversa.d.pop(marca, None)
+    return True
+
+def id_da_rodada(plano, prefixo='plano'):
+    return prefixo+'-'+hashlib.sha256(plano.encode()).hexdigest()[:16]
+
+FINAIS_CONSULTA = {'concluida', 'falhou', 'cancelada', 'expirada'}
+
+def rodada_situacao(id_pedido):
+    """(aberta, encerrada): há consultas dessa rodada? nenhuma ainda está em andamento?
+
+    `encerrada` é True mesmo quando todos os provedores falharam: sem parecer nenhum a
+    conversa segue em frente. Falha de provedor (cota, login) nunca pode travar o trabalho —
+    é a mesma filosofia do resto do hook, que libera em qualquer erro."""
+    encontrados = [j for j in jobs() if j.get('id_pedido') == id_pedido]
+    if not encontrados:
+        return False, False
+    return True, all(j.get('estado') in FINAIS_CONSULTA for j in encontrados)
+
+def rodada_teve_parecer(id_pedido):
+    return any(j.get('id_pedido') == id_pedido and j.get('estado') == 'concluida' for j in jobs())
+
+def chamada_dupla_pronta(projeto, repo_rel, plano, pergunta, prefixo='plano'):
+    """A rodada de entrada e a de saída têm ids distintos: senão a crítica já concluída
+    passaria por conferência e a 2ª rodada nunca aconteceria."""
+    args = {'projeto': projeto, 'repositorio': repo_rel, 'pergunta': pergunta,
+            'plano': plano[:LIMITE_PLANO_HOOK], 'id_pedido': id_da_rodada(plano, prefixo)}
+    fecho = ('compare os dois pareceres com o seu plano e só então implemente'
+             if prefixo == 'plano' else
+             'avalie os pareceres e só então repita o commit')
+    return ('Chame a ferramenta MCP consulta_dupla do servidor valt-ponte com exatamente estes argumentos:\n'
+            + json.dumps(args, ensure_ascii=False)
+            + '\nEla abre Claude e Codex em duas janelas do Ptyxis. '
+              'Depois chame consulta_rodada (id_pedido igual, espera_segundos 25) até estado final, '
+            + fecho + '. Não substitua por Task/subagente.')
+
+def entrada_da_ferramenta(entrada):
+    dados = entrada.get('tool_input')
+    if isinstance(dados, str):
+        try:
+            dados = json.loads(dados)
+        except ValueError:
+            dados = {}
+    return dados if isinstance(dados, dict) else {}
+
+def nome_interno(entrada):
+    """Ferramenta dinâmica da IDE: o nome real vem em tool_input.toolName."""
+    return str(entrada_da_ferramenta(entrada).get('toolName') or '')
+
+def argumentos_da_ferramenta(entrada):
+    """Argumentos reais: a ferramenta dinâmica os embrulha em tool_input.arguments."""
+    dados = entrada_da_ferramenta(entrada)
+    return dados['arguments'] if isinstance(dados.get('arguments'), dict) else dados
+
+def e_ferramenta(entrada, padrao):
+    return bool(padrao.match(str(entrada.get('tool_name') or '')) or padrao.match(nome_interno(entrada)))
+
+def plano_da_ferramenta(entrada):
+    """Devolve o texto do plano quando o evento é a ferramenta de plano da IDE."""
+    if not e_ferramenta(entrada, CRIA_PLANO):
+        return ''
+    argumentos = argumentos_da_ferramenta(entrada)
+    for campo in ('plan', 'plano', 'overview', 'content'):
+        texto = argumentos.get(campo)
+        if isinstance(texto, str) and texto.strip():
+            return texto.strip()[:LIMITE_PLANO_HOOK]
+    return ''
+
+def saindo_do_plano(entrada):
+    """SwitchMode para agent: o agente vai parar de planejar e começar a mexer."""
+    if not e_ferramenta(entrada, TROCA_MODO):
+        return False
+    return str(argumentos_da_ferramenta(entrada).get('target_mode_id') or '').lower() not in {'plan', ''}
 
 def chamada_pronta(projeto, repo_rel, arquivos, pergunta, semente):
     args = {'projeto': projeto, 'repositorio': repo_rel, 'arquivos': arquivos[:6], 'provedor': 'claude',
@@ -441,8 +709,95 @@ def caminhos(valor, chave=''):
         for item in valor:
             yield from caminhos(item, chave)
 
+CAMINHO_CITADO = re.compile(r'~/Sites/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)')
+PROJETO_CITADO = re.compile(r'~/Valt/([A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*)')
+
+def alvo_do_plano(entrada, conversa, plano=''):
+    """(projeto, repositório) a que o plano se refere, ou None.
+
+    Procura em ordem: cwd, workspaces, o que já foi editado e **os caminhos citados no
+    próprio plano** — um plano transversal costuma não ter repositório aberto, mas nomeia
+    os que toca. Em último caso aceita projeto do Valt sem repositório: plano de
+    documentação também merece crítica."""
+    candidatas = []
+    pasta = pasta_da_entrada(entrada)
+    if pasta:
+        candidatas.append(pasta)
+    candidatas += [Path(r).expanduser() for r in (entrada.get('workspace_roots') or [])]
+    candidatas += [Path(r) for r in conversa.d.get('editados', {})]
+    candidatas += [SITES/rel for rel in CAMINHO_CITADO.findall(plano)]
+    for candidata in candidatas:
+        mapeado = repo_mapeado(candidata)
+        if mapeado:
+            return mapeado[2], mapeado[1]
+    # Sem repositório: o consultor investiga a documentação do projeto no Valt.
+    for rel in PROJETO_CITADO.findall(plano):
+        projeto = projeto_do_caminho_valt(rel)
+        if projeto:
+            return projeto, ''
+    for raiz in (entrada.get('workspace_roots') or []):
+        caminho = Path(raiz).expanduser().resolve()
+        if caminho.is_relative_to(VAULT.resolve()) and caminho != VAULT.resolve():
+            projeto = projeto_do_caminho_valt(caminho.relative_to(VAULT.resolve()).as_posix())
+            if projeto:
+                return projeto, ''
+    return None
+
+def repo_do_plano(entrada, conversa):
+    """Compatível com as regras que precisam de (raiz, repositório, projeto)."""
+    alvo = alvo_do_plano(entrada, conversa, conversa.d.get('plano') or '')
+    if not alvo or not alvo[1]:
+        return None
+    return repo_mapeado(SITES/alvo[1])
+
+def regra_plano_sem_critica(entrada, conversa):
+    """Há plano nesta conversa e ninguém o criticou: não começa a implementar ainda.
+
+    O gatilho é o plano, não o volume de arquivos: é no momento de decidir a abordagem
+    que a segunda opinião vale mais."""
+    plano = conversa.d.get('plano') or ''
+    if not plano or conversa.d.get('plano_criticado'):
+        return None
+    if pediu_sem_consulta(entrada, conversa):
+        return None
+    id_pedido = id_da_rodada(plano)
+    aberta, encerrada = rodada_situacao(id_pedido)
+    if encerrada:
+        conversa.d['plano_criticado'] = True
+        if not rodada_teve_parecer(id_pedido):
+            registrar('hook_plano', ok=False, regra='plano_sem_critica',
+                      mensagem='rodada terminou sem nenhum parecer; implementação liberada')
+        return None
+    mapeado = repo_do_plano(entrada, conversa)
+    if not mapeado:
+        return None  # fora de repositório mapeado a ponte não tem o que consultar
+    _, repo_rel, projeto = mapeado
+    if aberta:
+        return negar('rodada de crítica do plano em andamento',
+                     'A rodada de crítica deste plano já foi aberta e ainda não terminou. '
+                     f'Chame consulta_rodada com id_pedido "{id_pedido}" e espera_segundos 25 até o estado final, '
+                     'compare os pareceres com o seu plano e só então implemente.',
+                     projeto=projeto, repositorio=repo_rel, regra='plano_sem_critica')
+    return negar('plano ainda não criticado por Claude e Codex',
+                 'Este plano ainda não passou pela crítica dos consultores. '
+                 + chamada_dupla_pronta(projeto, repo_rel, plano,
+                                        'Critique este plano: riscos, o que faltou, o que está errado na abordagem.'),
+                 projeto=projeto, repositorio=repo_rel, regra='plano_sem_critica')
+
 def pre_tool(entrada, conversa):
     nome = str(entrada.get('tool_name') or '')
+    # O plano aparece aqui antes de existir em qualquer outro lugar; guardar não custa nada.
+    plano = plano_da_ferramenta(entrada)
+    if plano:
+        if trocar_plano(conversa, plano):
+            registrar('hook_plano', mensagem='plano capturado ('+str(len(plano))+' caracteres)')
+        return {}  # nunca barrar a criação do plano: é ele que será criticado
+    if e_ferramenta(entrada, TROCA_MODO):
+        if saindo_do_plano(entrada):
+            pendente = regra_plano_sem_critica(entrada, conversa)
+            if pendente:
+                return pendente
+        return {}  # trocar de modo não escreve arquivo: não passa pela regra de caminhos
     if nome.lower() in FERRAMENTAS_LEITURA or nome.startswith('MCP:') or nome == 'Shell':
         return {}
     ferramenta = entrada.get('tool_input')
@@ -456,6 +811,12 @@ def pre_tool(entrada, conversa):
         aviso = ('valt-ponte: edição barrada — ' + AVISO_CONFIG + '. Não altere essa configuração; '
                  'se a ponte falhar, relate o erro ao usuário.')
         return {'permission': 'deny', 'user_message': aviso, 'agent_message': aviso}
+    # Markdown ainda é planejamento; qualquer outro arquivo é a implementação começando.
+    alvos = [texto for texto in caminhos(ferramenta) if texto]
+    if alvos and not all(MARKDOWN.search(texto) for texto in alvos):
+        pendente = regra_plano_sem_critica(entrada, conversa)
+        if pendente:
+            return pendente
     return {}
 
 def restaurar_config(caminho=''):
@@ -464,18 +825,11 @@ def restaurar_config(caminho=''):
     if instalador.is_file():
         subprocess.run(['bash', str(instalador), 'instalar', '--aplicar'], capture_output=True, timeout=3)
 
-def pediu_sem_consulta(entrada, conversa):
+def pediu_sem_consulta(entrada, conversa, itens=None):
     """#sem-consulta vem do beforeSubmitPrompt (IDE) ou das mensagens do usuário na transcrição (cursor-agent não dispara o evento)."""
     if conversa.d.get('sem_consulta'):
         return True
-    transcricao = entrada.get('transcript_path')
-    if not transcricao or not Path(transcricao).is_file():
-        return False
-    for linha in Path(transcricao).read_text(encoding='utf-8', errors='replace').splitlines():
-        try:
-            item = json.loads(linha)
-        except ValueError:
-            continue
+    for item in (itens if itens is not None else itens_da_transcricao(entrada.get('transcript_path'))):
         if item.get('role') != 'user':
             continue
         conteudo = item.get('message', {}).get('content', [])
@@ -501,6 +855,61 @@ def pendencia_revisao(conversa):
         return repo_rel, projeto, relativos, raiz
     return None
 
+def regra_conferencia_no_commit(comando, pasta, conversa):
+    """Plano criticado e implementado: o commit espera a conferência entre o feito e o combinado.
+
+    É a 2ª rodada — a 1ª critica a abordagem, esta confere o resultado."""
+    if not COMMIT.search(comando):
+        return None
+    plano = conversa.d.get('plano') or ''
+    if not plano or not conversa.d.get('plano_criticado') or conversa.d.get('plano_conferido'):
+        return None
+    id_pedido = id_da_rodada(plano, 'confere')
+    aberta, encerrada = rodada_situacao(id_pedido)
+    if encerrada:
+        conversa.d['plano_conferido'] = True
+        if not rodada_teve_parecer(id_pedido):
+            registrar('hook_plano', ok=False, regra='conferencia_final',
+                      mensagem='conferência terminou sem nenhum parecer; commit liberado')
+        return None
+    alvo = repo_mapeado(diretorio_efetivo(comando, pasta, COMMIT))
+    if not alvo:
+        return None
+    raiz, repo_rel, projeto = alvo
+    if aberta:
+        return negar('conferência final do plano em andamento',
+                     'A conferência final deste plano já foi aberta e ainda não terminou. '
+                     f'Chame consulta_rodada com id_pedido "{id_pedido}" e espera_segundos 25 até o estado final, '
+                     'avalie os pareceres e só então repita o commit.',
+                     projeto=projeto, repositorio=repo_rel, regra='conferencia_final')
+    editados = conversa.d.get('editados', {}).get(str(raiz), [])
+    relativos = [Path(a).resolve().relative_to(raiz).as_posix() for a in editados
+                 if Path(a).resolve().is_relative_to(raiz)]
+    pergunta = ('Conferência final: o que foi implementado corresponde ao plano? '
+                'Aponte desvios, riscos e o que ficou faltando. Arquivos tocados: '
+                + (', '.join(relativos[:20]) or '(nenhum registrado)'))
+    # A 2ª rodada abre sozinha, como a 1ª: esperar o agente chamar é a premissa que falhou o
+    # dia inteiro — o commit ficaria barrado para sempre.
+    tentativas = conversa.d.get('confere_tentativas') or {}
+    chave = id_pedido
+    if (tentativas.get(chave, 0) < MAX_TENTATIVAS_RODADA
+            and rodadas_na_ultima_hora() < TETO_RODADAS_HORA
+            and abrir_rodada_em_segundo_plano(projeto, repo_rel, plano, pergunta, 'confere')):
+        conversa.d['confere_tentativas'] = {**tentativas, chave: tentativas.get(chave, 0)+1}
+        registrar('hook_plano', projeto=projeto, repositorio=repo_rel, regra='conferencia_final',
+                  mensagem='conferência final aberta pelo hook; abrindo Claude e Codex')
+        return negar('commit barrado: conferência final aberta agora',
+                     f'O commit foi barrado: esta conversa implementou um plano ({len(relativos)} arquivos) '
+                     'e a conferência final acabou de ser aberta em duas janelas do Ptyxis. '
+                     f'Chame consulta_rodada (id_pedido "{id_pedido}", espera_segundos 25) até o estado final, '
+                     'avalie os pareceres e só então repita o commit.',
+                     projeto=projeto, repositorio=repo_rel, regra='conferencia_final')
+    return negar('commit barrado: plano implementado sem conferência final',
+                 f'O commit foi barrado: esta conversa implementou um plano ({len(relativos)} arquivos) '
+                 'e ainda não houve a conferência final. '
+                 + chamada_dupla_pronta(projeto, repo_rel, plano, pergunta, 'confere'),
+                 projeto=projeto, repositorio=repo_rel, regra='conferencia_final')
+
 def regra_revisao_no_commit(comando, pasta, conversa):
     if not COMMIT.search(comando):
         return None
@@ -523,12 +932,14 @@ def before_shell(entrada, conversa):
     if pediu_sem_consulta(entrada, conversa):
         return {}
     return (regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta)
+            or regra_conferencia_no_commit(comando, pasta, conversa)
             or regra_revisao_no_commit(comando, pasta, conversa) or {})
 
 def after_tool(entrada, conversa, falhou=False):
     """postToolUse/postToolUseFailure do Shell: conta a 1ª linha de erro de tsc/Jest/Vitest/pgTAP.
 
     afterShellExecution não serve: não traz cwd e dispara junto com postToolUse (contaria em dobro).
+    Não tente capturar plano aqui: `processar` descarta postToolUse que não seja de Shell.
     """
     if str(entrada.get('tool_name', '')) != 'Shell':
         return {}
@@ -584,7 +995,7 @@ def nome_ferramenta(entrada):
 
 def after_mcp(entrada, conversa):
     nome = nome_ferramenta(entrada)
-    if nome not in {'consulta_iniciar', 'consulta_status', 'consulta_cancelar'}:
+    if nome not in {'consulta_iniciar', 'consulta_dupla', 'consulta_rodada', 'consulta_status', 'consulta_cancelar'}:
         return {}
     resultado = entrada.get('result_json') or entrada.get('result') or entrada.get('tool_output') or ''
     texto = resultado if isinstance(resultado, str) else json.dumps(resultado, ensure_ascii=False)
@@ -593,8 +1004,15 @@ def after_mcp(entrada, conversa):
     for id_consulta in ids:
         conversa.d['consultas'][id_consulta] = {'estado': estado.group(1) if estado else '?', 'em': agora()}
     # Só conta como chamada se a consulta existiu de fato (erro de MCP não devolve id).
-    if nome == 'consulta_iniciar' and ids:
+    if nome in {'consulta_iniciar', 'consulta_dupla'} and ids:
         conversa.d['chamou_em'] = agora()
+    # A crítica do plano acabou? A rodada é que diz, não o anúncio do agente.
+    plano = conversa.d.get('plano')
+    if plano and not conversa.d.get('plano_criticado'):
+        _, encerrada = rodada_situacao(id_da_rodada(plano))
+        if encerrada:
+            conversa.d['plano_criticado'] = True
+            registrar('hook_plano_criticado', mensagem='rodada concluída; implementação liberada')
     return {}
 
 def after_file_edit(entrada, conversa):
@@ -622,11 +1040,60 @@ def after_response(entrada, conversa):
 IDIOMA = ('Responda, narre, comente e nomeie tarefas sempre em português do Brasil, inclusive títulos e prompts '
           'de subagentes, mensagens de commit e notas. Identificadores, comandos, flags, nomes de arquivo e saída de '
           'ferramentas ficam como estão.')
-LEMBRETE = ('valt-ponte: para segunda opinião chame consulta_iniciar (provedor claude, modo investigador, interativo false) '
-            'e consulta_status até o estado final no mesmo turno — anunciar não conta. Se um comando for negado pelo hook '
-            'da valt-ponte, faça a consulta indicada na mensagem e não altere a configuração mcp/hooks da IDE.')
+LEMBRETE = ('valt-ponte: feito um plano, chame consulta_dupla (com o plano na íntegra) e consulta_rodada até o estado '
+            'final no mesmo turno, antes de sair do Plan mode ou editar arquivo que não seja markdown — anunciar não conta. '
+            'Para um provedor só, consulta_iniciar + consulta_status. Se um comando for negado pelo hook da valt-ponte, '
+            'faça a consulta indicada na mensagem e não altere a configuração mcp/hooks da IDE.')
+
+LIMITE_PARECER_INJETADO = 3000
+
+def pareceres_da_rodada(id_pedido):
+    """Pareceres já concluídos de uma rodada, para entregar ao chat sem o agente pedir."""
+    achados = []
+    for job in jobs():
+        if job.get('id_pedido') != id_pedido or job.get('estado') != 'concluida':
+            continue
+        achados.append((job.get('provedor', '?'), (job.get('parecer') or '')[:LIMITE_PARECER_INJETADO],
+                        job.get('registro', '')))
+    return sorted(achados)
+
+def entregar_pareceres(conversa):
+    """O hook abriu a rodada; agora devolve o resultado ao chat por conta própria.
+
+    Sem isto o agente só saberia dos pareceres se chamasse consulta_rodada — e contar com
+    isso é justamente o que nunca funcionou."""
+    plano = conversa.d.get('plano')
+    if not plano or conversa.d.get('pareceres_entregues'):
+        return ''
+    id_pedido = id_da_rodada(plano)
+    _, encerrada = rodada_situacao(id_pedido)
+    if not encerrada:
+        return ''
+    achados = pareceres_da_rodada(id_pedido)
+    if not achados:
+        return ''
+    conversa.d['pareceres_entregues'] = True
+    conversa.d['plano_criticado'] = True
+    registrar('hook_entregou_pareceres', mensagem=f'{len(achados)} parecer(es) da rodada {id_pedido}')
+    partes = [f'### Parecer do {provedor} ({registro})\n{texto}' for provedor, texto, registro in achados]
+    return ('\n\nvalt-ponte: os consultores criticaram o seu plano. Compare com o que você propôs — '
+            'onde concordam, trate como achado firme; onde divergem, decida e diga por quê.\n\n'
+            + '\n\n'.join(partes))
+
+def anotar_modo(entrada, conversa):
+    """composer_mode só chega em sessionStart e beforeSubmitPrompt; 'plan' é valor válido
+    (o enum da IDE tem plan/spec/debug etc., embora a doc liste só agent|ask|edit)."""
+    modo = str(entrada.get('composer_mode') or '').lower()
+    if modo:
+        conversa.d['composer_mode'] = modo
+    return modo
+
+def session_start(entrada, conversa):
+    anotar_modo(entrada, conversa)
+    return {'continue': True, 'additional_context': IDIOMA+'\n'+LEMBRETE}
 
 def before_prompt(entrada, conversa):
+    anotar_modo(entrada, conversa)
     texto = str(entrada.get('prompt') or entrada.get('text') or '')
     if '#sem-consulta' in texto:
         conversa.d['sem_consulta'] = True
@@ -634,7 +1101,7 @@ def before_prompt(entrada, conversa):
     conversa.d.pop('anunciou_em', None)
     conversa.d['turno_em'] = agora()
     conversa.d['retomadas'] = 0
-    return {'continue': True, 'additional_context': IDIOMA+'\n'+LEMBRETE}
+    return {'continue': True, 'additional_context': IDIOMA+'\n'+LEMBRETE+entregar_pareceres(conversa)}
 
 def consulta_ativa(conversa):
     for id_consulta in conversa.d['consultas']:
@@ -651,8 +1118,52 @@ def retomar(conversa, mensagem, regra):
     registrar('hook_retomou', regra=regra, mensagem=mensagem[:200])
     return {'followup_message': mensagem}
 
+def rodada_do_plano_no_stop(entrada, conversa, itens=None):
+    """Nasceu um plano neste turno: o hook abre Claude e Codex por conta própria.
+
+    Não adianta pedir ao agente — ele não chama a ponte sozinho (medido em 15 e 16/09).
+    Aqui o hook deixa de ser só porteiro e vira quem abre a janela."""
+    plano = plano_da_transcricao(entrada, itens) or plano_do_disco(conversa.d.get('turno_em', 0))
+    if not plano:
+        return None
+    assinatura = hashlib.sha256(plano.encode()).hexdigest()[:16]
+    tentativas = conversa.d.get('plano_tentativas') or {}
+    if tentativas.get(assinatura, 0) >= MAX_TENTATIVAS_RODADA:
+        return None  # já tentamos e o filho não subiu: não insistir em laço
+    trocar_plano(conversa, plano)
+    id_pedido = id_da_rodada(plano)
+    aberta, _ = rodada_situacao(id_pedido)
+    if aberta:
+        return None  # a rodada existe no disco (o hook ou o agente abriu): nada a fazer
+    # A partir daqui, o que impedir a abertura é transitório (alvo, teto, spawn): não contar
+    # tentativa, senão uma falha de um turno silenciaria o plano para sempre.
+    alvo = alvo_do_plano(entrada, conversa, plano)
+    if not alvo:
+        registrar('hook_plano', ok=False, mensagem='plano sem projeto nem repositório mapeado; rodada não aberta')
+        return None
+    projeto, repo_rel = alvo
+    if rodadas_na_ultima_hora() >= TETO_RODADAS_HORA:
+        registrar('hook_plano', ok=False, repositorio=repo_rel,
+                  mensagem=f'teto de {TETO_RODADAS_HORA} rodadas por hora atingido; rodada não aberta')
+        return None
+    registrar('hook_plano', projeto=projeto, repositorio=repo_rel,
+              mensagem=f'plano novo ({len(plano)} caracteres); abrindo Claude e Codex')
+    if not abrir_rodada_em_segundo_plano(projeto, repo_rel, plano,
+                                         'Critique este plano: riscos, o que faltou, o que está errado na abordagem.'):
+        return None
+    # Conta a tentativa: o Popen subiu, mas o filho ainda pode falhar (projeto inválido, cota).
+    # Se falhar, `rodada_situacao` não acha nada e o próximo turno tenta de novo — até o teto.
+    conversa.d['plano_tentativas'] = {**tentativas, assinatura: tentativas.get(assinatura, 0)+1}
+    return retomar(conversa,
+                   'A valt-ponte abriu Claude e Codex em duas janelas do Ptyxis para criticarem este plano. '
+                   f'Chame consulta_rodada (id_pedido "{id_pedido}", espera_segundos 25) até o estado final, '
+                   'compare os dois pareceres com o seu plano e só então implemente.', 'plano_novo')
+
 def stop(entrada, conversa):
-    if pediu_sem_consulta(entrada, conversa):
+    # Uma leitura da transcrição para o evento inteiro: o #sem-consulta e o plano vinham
+    # fazendo duas varreduras completas dentro do mesmo orçamento de LIMITE_S.
+    itens = list(itens_da_transcricao(entrada.get('transcript_path')))
+    if pediu_sem_consulta(entrada, conversa, itens):
         return {}
     if conversa.d.pop('config_restaurada_em', None):
         return retomar(conversa, 'Você editou a configuração da valt-ponte (mcp/hooks da IDE); o hook restaurou a versão '
@@ -660,6 +1171,9 @@ def stop(entrada, conversa):
     voltas = max(int(entrada.get('loop_count') or 0), conversa.d.get('retomadas', 0))
     if voltas >= MAX_RETOMADAS or str(entrada.get('status', 'completed')) not in {'completed', 'complete', 'success'}:
         return {}
+    nova = rodada_do_plano_no_stop(entrada, conversa, itens)
+    if nova:
+        return nova
     ativa = consulta_ativa(conversa)
     if ativa:
         return retomar(conversa, f'A consulta {ativa} da valt-ponte ainda está ativa. Chame consulta_status '
@@ -683,7 +1197,8 @@ def stop(entrada, conversa):
 
 EVENTOS = {'preToolUse': pre_tool, 'beforeShellExecution': before_shell, 'postToolUse': after_tool,
            'postToolUseFailure': lambda entrada, conversa: after_tool(entrada, conversa, falhou=True), 'afterMCPExecution': after_mcp, 'afterFileEdit': after_file_edit,
-           'afterAgentResponse': after_response, 'beforeSubmitPrompt': before_prompt, 'stop': stop}
+           'afterAgentResponse': after_response, 'beforeSubmitPrompt': before_prompt,
+           'sessionStart': session_start, 'stop': stop}
 
 def processar(evento, bruto):
     if (STATE/'desligado').exists():

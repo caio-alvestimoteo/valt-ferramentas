@@ -176,5 +176,27 @@ class AntigravityTest(unittest.TestCase):
         self.assertEqual(self.rodar_main('PreToolUse', json.dumps(entrada))['decision'], 'deny')
         self.assertEqual(self.chamadas()[-1]['ide'], 'antigravity')
 
+class RodadaDuplaTest(unittest.TestCase):
+    """consulta_dupla devolve dois ids; sem isso o agente é retomado por engano."""
+    setUp = base.HookTest.setUp
+    tearDown = base.HookTest.tearDown
+    put = base.HookTest.put
+    git = base.HookTest.git
+
+    def test_resultado_mcp_devolve_os_dois_ids(self):
+        pedido = 'plano-abc'
+        for provedor in ('claude', 'codex'):
+            jid = hashlib.md5(provedor.encode()).hexdigest()
+            self.put(self.state/jid/'job.json', json.dumps({
+                'id': jid, 'id_pedido': pedido, 'provedor': provedor, 'estado': 'executando',
+                'criada': time.time(), 'pacote': {'projeto': 'Pessoais/lab', 'repositorio': 'Pessoais/lab', 'fontes': []}}))
+        bruto = ag.resultado_mcp('mcp_valt-ponte_consulta_dupla', {'id_pedido': pedido})
+        dados = json.loads(bruto)
+        self.assertEqual(len(dados['consultas']), 2)
+        self.assertEqual(sorted(c['provedor'] for c in dados['consultas']), ['claude', 'codex'])
+    def test_pedido_desconhecido_segue_sinalizando_erro(self):
+        self.assertIn('error', json.loads(ag.resultado_mcp('mcp_valt-ponte_consulta_dupla', {'id_pedido': 'nada'})))
+
+
 if __name__ == '__main__':
     unittest.main()

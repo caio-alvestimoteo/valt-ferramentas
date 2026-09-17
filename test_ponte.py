@@ -141,7 +141,7 @@ class PonteTest(unittest.TestCase):
         responses=list(map(json.loads,output.getvalue().splitlines()))
         self.assertEqual(len(responses),3)
         tools=responses[1]['result']['tools']
-        self.assertEqual(len(tools),4)
+        self.assertEqual(len(tools),6)
         self.assertEqual(set(tools[1]['inputSchema']['required']),{'projeto','pergunta','provedor','id_pedido'})
         self.assertIn('Ptyxis', tools[1]['description'])
         self.assertIn('Task', tools[1]['description'])
@@ -211,9 +211,12 @@ class PonteTest(unittest.TestCase):
             ponte.segurar_janela()  # tty fechado: não explode
 
     # --- F1: robustez
-    def abrir(self,projeto='Seara/Food',pedido='r1',**kw):
+    def abrir(self,projeto='Seara/Food',pedido='r1',provedor='claude',**kw):
         with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch.object(ponte,'subprocess'):
-            return ponte.start(projeto,'login','claude',id_pedido=pedido,**kw)
+            return ponte.start(projeto,'login',provedor,id_pedido=pedido,**kw)
+    def dupla(self,projeto='Seara/Food',pedido='rd1',plano='# Plano\nTrocar o header.',**kw):
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch.object(ponte,'subprocess'):
+            return ponte.dupla(projeto,'login',pedido,plano=plano,**kw)
     def test_saida_do_mcp_nao_cancela_consulta(self):
         self.assertFalse(hasattr(ponte,'OWNED'))
         codigo=Path(ponte.__file__).read_text()
@@ -225,12 +228,77 @@ class PonteTest(unittest.TestCase):
     def test_abrindo_preso_nao_trava_nova_consulta(self):
         self.create_job(estado='abrindo',criada=time.time()-61)
         self.assertEqual(self.abrir(pedido='r2')['estado'],'abrindo')
-    def test_trava_por_projeto(self):
+    def test_trava_por_projeto_e_provedor(self):
         self.put(self.v/'Jaiminho/README.md','Jaiminho')
         self.abrir()
         self.assertEqual(self.abrir('Jaiminho','r-outro')['estado'],'abrindo')
         with self.assertRaises(ValueError) as cm:self.abrir(pedido='r3')
-        self.assertIn('Seara/Food',str(cm.exception))
+        self.assertIn('Seara/Food',str(cm.exception));self.assertIn('claude',str(cm.exception))
+    def test_mesmo_projeto_com_outro_provedor_passa(self):
+        """Claude e Codex correm juntos: a trava separa por provedor, não por projeto."""
+        self.abrir()
+        self.assertEqual(self.abrir(pedido='r-codex',provedor='codex')['estado'],'abrindo')
+    def test_dupla_abre_os_dois_com_o_mesmo_dossie(self):
+        r=self.dupla()
+        self.assertEqual([c['provedor'] for c in r['consultas']],['claude','codex'])
+        self.assertEqual(r['id_pedido'],'rd1');self.assertNotIn('falhas',r)
+        jobs=[ponte.read_job(c['id_consulta']) for c in r['consultas']]
+        self.assertEqual(jobs[0]['pacote'],jobs[1]['pacote'])
+        self.assertEqual(jobs[0]['pacote']['plano'],'# Plano\nTrocar o header.')
+    def test_dupla_leva_o_plano_ao_dossie(self):
+        r=self.dupla()
+        texto=ponte.read_job(r['consultas'][0]['id_consulta'])['pacote']['texto']
+        self.assertIn('Plano da IDE',texto);self.assertIn('Trocar o header.',texto)
+    def test_dupla_sobrevive_a_uma_janela_que_nao_abre(self):
+        self.abrir(pedido='r-ja',provedor='codex')
+        r=self.dupla()
+        self.assertEqual([c['provedor'] for c in r['consultas']],['claude'])
+        self.assertEqual(r['falhas'][0]['provedor'],'codex')
+    def test_rodada_espera_as_duas_de_uma_vez(self):
+        r=self.dupla()
+        ids=[c['id_consulta'] for c in r['consultas']]
+        ponte.mark(ids[0],estado='concluida',parecer='parecer do claude')
+        parcial=ponte.rodada('rd1')
+        self.assertFalse(parcial['concluida']);self.assertIn('codex',parcial['instrucao'])
+        ponte.mark(ids[1],estado='concluida',parecer='parecer do codex')
+        final=ponte.rodada('rd1')
+        self.assertTrue(final['concluida'])
+        self.assertEqual([p['provedor'] for p in final['pareceres']],['claude','codex'])
+        self.assertEqual(final['pareceres'][0]['parecer'],'parecer do claude')
+        self.assertIn('sem shell',final['pareceres'][0]['ferramentas'])
+        self.assertIn('sandbox',final['pareceres'][1]['ferramentas'])
+    def test_plano_chega_ao_prompt_do_investigador(self):
+        """O investigador não recebe o texto do dossiê: sem seção própria o plano se perderia."""
+        job=ponte.read_job(self.dupla()['consultas'][0]['id_consulta'])
+        prompt=ponte.prompt_inicial(job)
+        self.assertIn('Plano a criticar',prompt);self.assertIn('Trocar o header.',prompt)
+        self.assertIn('criticar o plano',prompt)
+    def test_prompt_sem_plano_nao_ganha_secao(self):
+        job=ponte.read_job(self.abrir()['id'])
+        self.assertNotIn('Plano a criticar',ponte.prompt_inicial(job))
+    def test_projeto_espelhado_dispensa_o_indice(self):
+        """ricca e gradina tinham doc no Valt e não estavam no índice em 17/09."""
+        self.put(self.v/'Seara/ricca/README.md','ricca')
+        (self.s/'Seara/ricca').mkdir(parents=True,exist_ok=True)
+        pacote=ctx.build(self.v,self.s,'Seara/ricca','como esta o header','Seara/ricca')
+        self.assertEqual(pacote['repositorio'],'Seara/ricca')
+    def test_projeto_alheio_ao_repositorio_segue_barrado(self):
+        self.put(self.v/'Jaiminho/README.md','jaiminho')
+        (self.s/'Seara/ricca').mkdir(parents=True,exist_ok=True)
+        with self.assertRaises(ValueError) as cm:
+            ctx.build(self.v,self.s,'Jaiminho','x','Seara/ricca')
+        self.assertIn('não correspondem',str(cm.exception))
+    def test_rodada_sem_pedido_orienta(self):
+        with self.assertRaises(ValueError) as cm:ponte.rodada('nao-existe')
+        self.assertIn('consulta_dupla',str(cm.exception))
+    def test_dupla_recusa_plano_gigante(self):
+        with self.assertRaises(ValueError) as cm:self.dupla(plano='x'*40001)
+        self.assertIn('40000',str(cm.exception))
+    def test_job_velho_sai_da_varredura(self):
+        antigo=self.create_job(estado='abrindo')
+        velho=time.time()-31*24*3600
+        os.utime(ponte.job_path(antigo)/'job.json',(velho,velho))
+        self.assertNotIn(antigo,[j['id'] for j in ponte.jobs_recentes()])
     def test_interativo_e_modo_padrao(self):
         job=ponte.read_job(self.abrir()['id'])
         self.assertFalse(job['interativo']);self.assertEqual(job['modo'],'investigador')

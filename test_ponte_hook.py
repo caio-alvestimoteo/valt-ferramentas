@@ -395,5 +395,23 @@ class HookTest(unittest.TestCase):
         d = json.loads(hook.caminho_conversa({'conversation_id': 'c1'}).read_text())
         self.assertEqual(d['consultas']['a'*32]['estado'], 'abrindo')
 
+    def test_erro_conta_com_cwd_vazio_pela_raiz_do_workspace(self):
+        for n in range(2):
+            self.evento('postToolUseFailure', tool_name='Shell', tool_use_id=f'w{n}', cwd='', workspace_roots=[str(self.repo)],
+                        tool_input={'command': 'npx tsc --noEmit', 'cwd': ''}, error_message='src/a.ts(1,1): error TS2322: x')
+        self.assertEqual(self.evento('beforeShellExecution', command='npx tsc --noEmit', cwd='', workspace_roots=[str(self.repo)])['permission'], 'deny')
+
+    def test_commit_barrado_com_mais_de_20_arquivos_sem_revisao(self):
+        for i in range(21):
+            self.put(self.repo/f'src/g{i}.ts', 'x'); self.evento('afterFileEdit', file_path=str(self.repo/f'src/g{i}.ts'))
+        r = self.shell('git add -A && git commit -m muitos')
+        self.assertEqual(r['permission'], 'deny'); self.assertIn('Revisão final', r['user_message'])
+        self.job(criada=time.time()+1)
+        self.assertEqual(self.shell('git add -A && git commit -m muitos'), {})
+    def test_revisao_em_outro_repositorio_nao_barra(self):
+        for i in range(21):
+            self.put(self.repo/f'src/g{i}.ts', 'x'); self.evento('afterFileEdit', file_path=str(self.repo/f'src/g{i}.ts'))
+        self.assertEqual(self.evento('beforeShellExecution', command='git commit -m x', cwd=str(self.v)), {})
+
 if __name__ == '__main__':
     unittest.main()

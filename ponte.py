@@ -39,7 +39,9 @@ INSTRUCOES_MCP = (
     'consulta_iniciar e depois consulta_status (espera_segundos 25) até estado final, no mesmo turno. '
     'Obrigatório antes de commitar migração sensível, antes da 3ª tentativa com o mesmo erro e na '
     'revisão final com mais de 20 arquivos. Task e agents internos do Cursor não substituem. '
-    'Se um comando for negado pelo hook da ponte, faça a consulta indicada na mensagem.'
+    'Se um comando for negado pelo hook da ponte, faça a consulta indicada na mensagem e não altere a configuração '
+    '(~/.cursor/mcp.json, hooks.json). Responda e narre sempre em português do Brasil; identificadores, comandos e '
+    'nomes de arquivo ficam como estão.'
 )
 
 def traduzir_erro(saida):

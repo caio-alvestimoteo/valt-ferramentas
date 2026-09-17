@@ -459,6 +459,35 @@ def pediu_sem_consulta(entrada, conversa):
             return True
     return False
 
+def pendencia_revisao(conversa):
+    """(repo_rel, projeto, relativos, raiz) do primeiro repositório com mais de 20 arquivos editados sem revisão final."""
+    for raiz, arquivos in conversa.d['editados'].items():
+        if len(arquivos) <= LIMITE_ARQUIVOS:
+            continue
+        mapeado = repo_mapeado(Path(raiz))
+        if not mapeado:
+            continue
+        _, repo_rel, projeto = mapeado
+        if consulta_depois(repo_rel, conversa.d.get('primeira_edicao', {}).get(raiz, 0)):
+            continue
+        relativos = [Path(a).resolve().relative_to(Path(raiz)).as_posix() for a in arquivos if Path(a).resolve().is_relative_to(Path(raiz))]
+        return repo_rel, projeto, relativos, raiz
+    return None
+
+def regra_revisao_no_commit(comando, pasta, conversa):
+    if not COMMIT.search(comando):
+        return None
+    pendente = pendencia_revisao(conversa)
+    alvo = repo_mapeado(diretorio_efetivo(comando, pasta, COMMIT))
+    if not pendente or not alvo or alvo[1] != pendente[0]:
+        return None
+    repo_rel, projeto, relativos, raiz = pendente
+    return negar(f'commit barrado: {len(conversa.d["editados"][raiz])} arquivos editados sem revisão final',
+                 f'O commit foi barrado pelo hook da valt-ponte: esta conversa editou {len(conversa.d["editados"][raiz])} arquivos em {repo_rel} '
+                 'e ainda não houve revisão final. '
+                 + chamada_pronta(projeto, repo_rel, relativos[:6], 'Revisão final: riscos e o que faltou nesta implementação',
+                                  repo_rel+'|revisao|'+str(len(relativos))), projeto=projeto, repositorio=repo_rel, regra='revisao_final')
+
 def before_shell(entrada, conversa):
     comando, pasta = comando_da_entrada(entrada), pasta_da_entrada(entrada)
     protecao = regra_protecao(comando)
@@ -466,7 +495,8 @@ def before_shell(entrada, conversa):
         return protecao
     if pediu_sem_consulta(entrada, conversa):
         return {}
-    return regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta) or {}
+    return (regra_migracao(entrada, comando, pasta) or regra_erro_repetido(conversa, comando, pasta)
+            or regra_revisao_no_commit(comando, pasta, conversa) or {})
 
 def after_tool(entrada, conversa, falhou=False):
     """postToolUse/postToolUseFailure do Shell: conta a 1ª linha de erro de tsc/Jest/Vitest/pgTAP.
@@ -497,7 +527,7 @@ def after_tool(entrada, conversa, falhou=False):
     if not falhou and codigo in (0, None) and not ERRO.search(saida):
         return {}
     ferramenta = entrada.get('tool_input') if isinstance(entrada.get('tool_input'), dict) else {}
-    base = entrada.get('cwd') or ferramenta.get('cwd')
+    base = entrada.get('cwd') or ferramenta.get('cwd') or pasta_da_entrada(entrada)
     mapeado = repo_mapeado(diretorio_efetivo(comando, base, TESTE))
     assinatura = assinatura_erro(saida)
     if not mapeado or not assinatura:
@@ -615,19 +645,13 @@ def stop(entrada, conversa):
         return retomar(conversa, 'Você anunciou uma consulta ao consultor mas encerrou sem chamar a ferramenta. Chame agora '
                        'consulta_iniciar do servidor MCP valt-ponte (provedor claude, modo investigador, interativo false, '
                        'id_pedido único) e depois consulta_status até o estado final, no mesmo turno. Task/subagente não substitui.', 'anunciou')
-    for raiz, arquivos in conversa.d['editados'].items():
-        if len(arquivos) <= LIMITE_ARQUIVOS:
-            continue
-        mapeado = repo_mapeado(Path(raiz))
-        if not mapeado:
-            continue
-        _, repo_rel, projeto = mapeado
-        if consulta_depois(repo_rel, conversa.d.get('primeira_edicao', {}).get(raiz, 0)):
-            continue
-        relativos = [Path(a).resolve().relative_to(Path(raiz)).as_posix() for a in arquivos if Path(a).resolve().is_relative_to(Path(raiz))]
+    pendente = pendencia_revisao(conversa)
+    if pendente:
+        repo_rel, projeto, relativos, raiz = pendente
+        arquivos = conversa.d['editados'][raiz]
         return retomar(conversa, f'Você alterou {len(arquivos)} arquivos em {repo_rel} nesta conversa. Antes de declarar pronto, faça a revisão final. '
                        + chamada_pronta(projeto, repo_rel, relativos[:6], 'Revisão final: riscos e o que faltou nesta implementação',
-                                        repo_rel+'|'+str(len(arquivos))), 'revisao_final')
+                                        repo_rel+'|revisao|'+str(len(relativos))), 'revisao_final')
     return {}
 
 EVENTOS = {'preToolUse': pre_tool, 'beforeShellExecution': before_shell, 'postToolUse': after_tool,
@@ -646,6 +670,9 @@ def processar(evento, bruto):
     if evento in {'postToolUse', 'postToolUseFailure'} and str(entrada.get('tool_name', '')) != 'Shell':
         return {}
     conversa = Conversa(entrada)
+    vistos = conversa.d.setdefault('eventos_vistos', [])
+    if evento not in vistos:
+        vistos.append(evento)
     try:
         resposta = funcao(entrada, conversa)
     finally:

@@ -15,6 +15,7 @@ Uso::
     python3 scripts/ambiente.py status                 # o que ocupa o disco hoje
     python3 scripts/ambiente.py status Seara/food      # só um projeto
     python3 scripts/ambiente.py derrubar Seara/food    # para os containers, preserva volumes
+    python3 scripts/ambiente.py derrubar --tudo        # tudo que está de pé, de qualquer origem
     python3 scripts/ambiente.py limpar Seara/food      # simulação: diz o que apagaria
     python3 scripts/ambiente.py limpar Seara/food --aplicar
     python3 scripts/ambiente.py dump Seara/food        # dump do banco antes de mexer em dados
@@ -67,6 +68,19 @@ SESSOES = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp") / "valt-ambientes"
 
 SUDOERS = Path("/etc/sudoers.d/valt-ambiente")
 
+# Vigia único: uma unidade de usuário que roda `acoplar` ao entrar na sessão e `derrubar --tudo`
+# ao sair (logout ou desligamento). Entre os dois, nada fica rodando.
+VIGIA = Path.home() / ".config/systemd/user/valt-ambiente.service"
+
+# O que o sudoers libera sem senha — só o necessário para o vigia e para o trap do terminal.
+COMANDOS_SUDOERS = (
+    "/usr/bin/systemctl stop docker.service",
+    "/usr/bin/systemctl stop containerd.service",
+    "/usr/bin/systemctl disable docker.service",
+    "/usr/bin/systemctl disable containerd.service",
+    "/usr/bin/systemctl enable --now docker.socket",
+)
+
 
 # ---------------------------------------------------------------- utilidades
 
@@ -86,6 +100,9 @@ def _rodar_sudo(cmd: list[str], senha: str | None = None) -> subprocess.Complete
     if senha is not None:
         return subprocess.run([cmd[0], "-S", *cmd[1:]], check=False, text=True,
                               input=senha + "\n", stderr=subprocess.DEVNULL)
+    if not sys.stdin.isatty():
+        # Sem terminal e sem senha (o vigia do systemd): só o que o sudoers libera passa.
+        return subprocess.run([cmd[0], "-n", *cmd[1:]], check=False, stderr=subprocess.DEVNULL)
     return subprocess.run(cmd, check=False)
 
 
@@ -259,11 +276,69 @@ def cmd_status(args) -> int:
     return 0
 
 
+def containers_de_pe() -> list[dict[str, str]]:
+    """Todo container rodando, com o projeto compose e a pasta de onde subiu (se houver)."""
+    if not docker_ok():
+        return []
+    saida = _rodar(["docker", "ps", "--format",
+                    '{{.ID}}\t{{.Names}}\t{{.Label "com.docker.compose.project"}}'
+                    '\t{{.Label "com.docker.compose.project.working_dir"}}'
+                    '\t{{.Label "com.supabase.cli.project"}}'])
+    chaves = ("id", "nome", "compose", "pasta", "supabase")
+    return [dict(zip(chaves, ln.split("\t"))) for ln in saida.stdout.splitlines() if ln.strip()]
+
+
+def derrubar_tudo(verboso: bool = True) -> int:
+    """Derruba todo container de pé, de qualquer origem — compose, `supabase start`, avulso.
+
+    Compose cai por `down --remove-orphans` na pasta de origem; o resto cai por `stop` (e `rm`
+    no caso do Supabase, que é o que `supabase stop` faria). Nunca `-v`: volumes ficam.
+    """
+    if shutil.which("systemctl") and \
+            _rodar(["systemctl", "is-active", "docker.service"]).stdout.strip() != "active":
+        return 0  # daemon parado = nada de pé; tocar no docker aqui só o acordaria à toa
+    de_pe = containers_de_pe()
+    if not de_pe:
+        parar_docker_ocioso(verboso=verboso)
+        return 0
+    por_compose: dict[str, tuple[str, list[dict]]] = {}
+    avulsos: list[dict] = []
+    for c in de_pe:
+        if c["compose"] and c["pasta"] and Path(c["pasta"]).is_dir():
+            por_compose.setdefault(c["compose"], (c["pasta"], []))[1].append(c)
+        else:
+            avulsos.append(c)
+    for nome, (pasta, cs) in por_compose.items():
+        if verboso:
+            print(f"■ compose {nome}: {len(cs)} container(s) — derrubando")
+        _rodar(["docker", "compose", "-p", nome, "down", "--remove-orphans"], cwd=pasta)
+    if avulsos:
+        if verboso:
+            origem = ", ".join(sorted({f"supabase {c['supabase']}" if c["supabase"] else c["nome"]
+                                       for c in avulsos}))
+            print(f"■ fora de compose ({origem}): {len(avulsos)} container(s) — parando")
+        _rodar(["docker", "stop", *[c["id"] for c in avulsos]])
+        supabase = [c["id"] for c in avulsos if c["supabase"]]
+        if supabase:
+            _rodar(["docker", "rm", *supabase])
+    if verboso:
+        print("    volumes preservados: todos")
+    parar_docker_ocioso(verboso=verboso)
+    return 0
+
+
 def cmd_derrubar(args) -> int:
     """Derruba o que está de pé: containers, dev server node e o próprio daemon do Docker.
 
     Nunca passa `-v`: volume de banco fica onde está.
     """
+    if args.tudo and not args.projeto:
+        node = [n for n in processos_node(dentro=SITES) if n["pid"] != os.getpid()]
+        if node:
+            liberado = encerrar_processos(node, aplicar=True)
+            if not args.silencioso:
+                print(f"■ node sob ~/Sites: {len(node)} processo(s) encerrado(s) — {humano(liberado)}")
+        return derrubar_tudo(verboso=not args.silencioso)
     for proj in achar_projetos(args.projeto):
         de_pe = proj.containers(todos=False)
         node = processos_node(dentro=proj.raiz)
@@ -671,6 +746,14 @@ def cmd_acoplar(args) -> int:
     aplicar = args.aplicar
     prefixo = "" if aplicar else "[simulação] "
     pendencias = 0
+    if getattr(args, "silencioso", False):
+        # O vigia roda a cada login: no journal só interessa o que ele corrigiu, não os ✓.
+        global print  # noqa: PLW0603
+        _print = print
+
+        def print(*a, **k):  # noqa: A001
+            if a and isinstance(a[0], str) and "✓" not in a[0] and a[0].strip():
+                _print(*a, **k)
 
     # Sem terminal (prompt `!` do Claude Code), o sudo não tem onde pedir a senha:
     # ela chega por pipe — `echo <senha> | ambiente.py acoplar --aplicar` — e é
@@ -679,20 +762,32 @@ def cmd_acoplar(args) -> int:
     if aplicar and not sys.stdin.isatty():
         senha = sys.stdin.readline().strip() or None
 
+    # Conferir containers acorda o daemon pelo socket. Se ele dormia, volta a dormir no fim —
+    # senão o vigia deixaria o dockerd de pé a cada login.
+    dormia = shutil.which("systemctl") and \
+        _rodar(["systemctl", "is-active", "docker.service"]).stdout.strip() != "active"
+
     print("\n1 · Docker sob demanda (o socket acorda o daemon)")
     if not shutil.which("docker"):
         print("    docker não instalado — rode de novo depois de instalar.")
     elif not shutil.which("systemctl"):
         print("    sem systemd — pulei.")
-    elif _rodar(["systemctl", "is-enabled", "docker.service"]).stdout.strip() == "enabled":
-        pendencias += 1
-        print(f"    {prefixo}docker.service sobe no boot → desabilitar e deixar o socket acordá-lo")
-        if aplicar:
-            _rodar_sudo(["sudo", "systemctl", "disable", "docker.service"], senha)
-            _rodar_sudo(["sudo", "systemctl", "enable", "--now", "docker.socket"], senha)
-            print("    ✓ o daemon só existe enquanto houver container")
     else:
-        print("    ✓ docker.service não sobe no boot")
+        # containerd entra na conta: docker.service o puxa por Wants=, mas habilitado sozinho
+        # ele sobe no boot e fica parado comendo ~60 MB.
+        no_boot = [s for s in ("docker.service", "containerd.service")
+                   if _rodar(["systemctl", "is-enabled", s]).stdout.strip() == "enabled"]
+        if no_boot:
+            pendencias += len(no_boot)
+            for s in no_boot:
+                print(f"    {prefixo}{s} sobe no boot → desabilitar e deixar o socket acordá-lo")
+            if aplicar:
+                for s in no_boot:
+                    _rodar_sudo(["sudo", "systemctl", "disable", s], senha)
+                _rodar_sudo(["sudo", "systemctl", "enable", "--now", "docker.socket"], senha)
+                print("    ✓ o daemon só existe enquanto houver container")
+        else:
+            print("    ✓ docker.service não sobe no boot")
 
     print("\n2 · Containers que voltam sozinhos")
     teimosos = containers_teimosos()
@@ -720,21 +815,26 @@ def cmd_acoplar(args) -> int:
             print("    ✓ banco só sobe pelo compose do projeto")
 
     print("\n4 · Derrubar o daemon ao fechar o terminal, sem pedir senha")
-    if SUDOERS.exists():
-        print(f"    ✓ {SUDOERS} já instalado")
-    elif not shutil.which("systemctl"):
+    regra = f"{getpass.getuser()} ALL=(root) NOPASSWD: " + ", ".join(COMANDOS_SUDOERS)
+    conteudo = (
+        "# Instalado por ~/Valt/scripts/ambiente.py (higiene de ambientes).\n"
+        "# Permite ao trap do terminal e ao vigia (valt-ambiente.service) parar e tirar do boot\n"
+        "# o daemon do Docker, sem senha. Para remover: sudo rm /etc/sudoers.d/valt-ambiente\n"
+        f"{regra}\n"
+    )
+    # O arquivo é 0440 root; o que dá para ler sem senha é a listagem do `sudo -l` (liberada
+    # porque já existe regra NOPASSWD). Conferir comando a comando, e só nas linhas NOPASSWD —
+    # testar `sudo -l <cmd>` não serve: passa enquanto a senha está em cache.
+    nopasswd = [ln for ln in _rodar(["sudo", "-n", "-l"]).stdout.splitlines() if "NOPASSWD:" in ln]
+    liberados = all(any(c in ln for ln in nopasswd) for c in COMANDOS_SUDOERS)
+    if not shutil.which("systemctl"):
         print("    sem systemd — não se aplica.")
+    elif SUDOERS.exists() and liberados:
+        print(f"    ✓ {SUDOERS} já instalado")
     else:
         pendencias += 1
-        regra = (f"{getpass.getuser()} ALL=(root) NOPASSWD: "
-                 "/usr/bin/systemctl stop docker.service, /usr/bin/systemctl stop containerd.service")
-        conteudo = (
-            "# Instalado por ~/Valt/scripts/ambiente.py (higiene de ambientes).\n"
-            "# Permite parar o daemon do Docker ao fechar o terminal, sem senha.\n"
-            "# Para remover: sudo rm /etc/sudoers.d/valt-ambiente\n"
-            f"{regra}\n"
-        )
-        print(f"    {prefixo}instalaria {SUDOERS} com uma regra, e só ela:")
+        verbo = "atualizaria" if SUDOERS.exists() else "instalaria"
+        print(f"    {prefixo}{verbo} {SUDOERS} com uma regra, e só ela:")
         print(f"      {regra}")
         if aplicar:
             temporario = Path("/tmp/valt-ambiente.sudoers")
@@ -758,6 +858,39 @@ def cmd_acoplar(args) -> int:
         pendencias += 1
         print(f"    {prefixo}falta carregar ambiente.sh no ~/.bashrc → rode ~/Valt/bootstrap/bootstrap.sh")
 
+    print("\n6 · Vigia no ligar e no desligar")
+    script = Path(__file__).resolve()
+    unidade = (
+        "[Unit]\n"
+        "Description=Valt: ambientes de ~/Sites fora do boot e derrubados ao sair\n"
+        "Documentation=file:%h/Valt/indices/higiene-ambientes.md\n\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "RemainAfterExit=yes\n"
+        f"ExecStart=/usr/bin/python3 {script} acoplar --aplicar --silencioso\n"
+        f"ExecStop=/usr/bin/python3 {script} derrubar --tudo --silencioso\n"
+        "TimeoutStopSec=90\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+    if not shutil.which("systemctl"):
+        print("    sem systemd — não se aplica.")
+    elif VIGIA.exists() and VIGIA.read_text() == unidade and \
+            _rodar(["systemctl", "--user", "is-enabled", VIGIA.name]).stdout.strip() == "enabled":
+        print(f"    ✓ {VIGIA.name}: login → acoplar; logout/desligar → derrubar --tudo")
+    else:
+        pendencias += 1
+        print(f"    {prefixo}instalaria {VIGIA} (login → acoplar; logout/desligar → derrubar --tudo)")
+        if aplicar:
+            VIGIA.parent.mkdir(parents=True, exist_ok=True)
+            VIGIA.write_text(unidade, encoding="utf-8")
+            _rodar(["systemctl", "--user", "daemon-reload"])
+            ok = _rodar(["systemctl", "--user", "enable", "--now", VIGIA.name]).returncode == 0
+            print("    ✓ vigia instalado" if ok else "    ✗ falhou ao habilitar o vigia")
+
+    if dormia:
+        parar_docker_ocioso(verboso=False)
+
     print()
     if not aplicar and pendencias:
         print(f"{pendencias} pendência(s). Nada foi alterado — repita com --aplicar.")
@@ -780,6 +913,9 @@ def main() -> int:
     d = sub.add_parser("derrubar", help="para os containers do projeto, preservando volumes")
     d.add_argument("projeto", nargs="?")
     d.add_argument("--compose", help="nome do projeto compose, se subiu com -p diferente")
+    d.add_argument("--tudo", action="store_true",
+                   help="todo container de pé, de qualquer origem (compose, supabase, avulso)")
+    d.add_argument("--silencioso", action="store_true")
     d.set_defaults(func=cmd_derrubar)
 
     du = sub.add_parser("dump", help="dump do banco em <projeto>/.dumps/ (container de pé)")
@@ -796,6 +932,7 @@ def main() -> int:
 
     a = sub.add_parser("acoplar", help="prende a regra ao Docker/SQL/boot; simula por padrão")
     a.add_argument("--aplicar", action="store_true", help="executa de verdade (usa sudo)")
+    a.add_argument("--silencioso", action="store_true", help="só o que corrigiu (uso do vigia)")
     a.set_defaults(func=cmd_acoplar)
 
     se = sub.add_parser("sessao", help="registro do que cada terminal subiu (usado pelo trap)")

@@ -37,7 +37,7 @@ REGRAS: list[tuple[str, re.Pattern[str], str]] = [
     (
         "caminho com usuário",
         re.compile(r"/home/[A-Za-z0-9._-]+/"),
-        "use ~/ ou $VALT/$SITES/$PLANEJAMENTOS/$FORMALIZADOS/$COMOTESTAR/$COMOAPRESENTAR",
+        "use ~/ ou $VALT/$SITES/$PLANEJAMENTOS/$FORMALIZADOS/$COMOTESTAR/$COMOAPRESENTAR/$INSITES/$INSIGHTS",
     ),
     (
         "montagem WSL",

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ponte Valt ↔ IDE (Cursor, Antigravity) por MCP ↔ consultor no Ptyxis, sem daemon de boot."""
+"""Ponte Valt ↔ IDE (Cursor, Antigravity) por MCP ↔ consultor no Ptyxis ou na fila da IDE, sem daemon de boot."""
 from __future__ import annotations
 import argparse
 import fcntl
@@ -32,6 +32,11 @@ def nome_ide(ide=None):
 FINAL = {'concluida', 'falhou', 'cancelada', 'expirada'}
 MODOS = {'investigador', 'parecer'}
 PRAZO_ABERTURA = 60
+# Fila: quando uma IDE registra um consumidor vivo, a consulta nasce 'enfileirada' e o
+# consumidor sobe o worker dentro da própria IDE (tarefa em segundo plano, thread filha),
+# em vez de uma janela do Ptyxis. Sem consumidor, tudo segue como antes.
+PRAZO_FILA = 120
+BATIMENTO_MAX = 15
 ERROS_CLI = [
     (re.compile(r'usage.?limit|rate.?limit|quota|too many requests|\b429\b', re.I),
      'Cota do provedor esgotada; aguarde ou troque o provedor'),
@@ -41,7 +46,7 @@ ERROS_CLI = [
      'Flag desconhecida; a versão da CLI mudou e provider_command precisa de ajuste'),
 ]
 INSTRUCOES_MCP = (
-    'valt-ponte abre Claude e Codex em janelas do Ptyxis, fora da IDE, para lerem o repositório sem '
+    'valt-ponte abre Claude e Codex em janelas do Ptyxis (ou dentro da IDE, quando ela registra um consumidor da fila) para lerem o repositório sem '
     'escrever nada e devolverem parecer. O gatilho principal é o plano: feito o plano, chame '
     'consulta_dupla (com o plano na íntegra) e depois consulta_rodada (espera_segundos 25) até estado '
     'final, no mesmo turno, antes de sair do Plan mode ou editar arquivo que não seja markdown. '
@@ -61,10 +66,7 @@ def traduzir_erro(saida):
             return mensagem
     return 'CLI terminou com erro; consulte o terminal (login/cota/permissões)'
 
-def owner_alive(data):
-    pid = data.get('pid_dono')
-    if pid is None:
-        return True
+def pid_vivo(pid):
     try:
         os.kill(pid, 0)
         return True
@@ -73,6 +75,32 @@ def owner_alive(data):
     except PermissionError:
         # Existe, mas fora do nosso alcance (sandbox, outro usuário): não cancelar.
         return True
+
+def owner_alive(data):
+    pid = data.get('pid_dono')
+    if pid is None:
+        return True
+    return pid_vivo(pid)
+
+def consumidor_path():
+    return STATE/'consumidor.json'
+
+def ler_consumidor():
+    try:
+        return json.loads(consumidor_path().read_text())
+    except (OSError, ValueError):
+        return None
+
+def consumidor_vivo():
+    """Há uma IDE consumindo a fila? Só conta pid vivo com batimento recente: um arquivo
+    órfão (IDE fechada sem limpar) não pode prender consultas numa fila que ninguém lê."""
+    dado = ler_consumidor()
+    if not dado:
+        return False
+    pid, batimento = dado.get('pid'), dado.get('batimento')
+    if not isinstance(pid, int) or not isinstance(batimento, (int, float)):
+        return False
+    return time.time()-batimento <= BATIMENTO_MAX and pid_vivo(pid)
 
 def write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -119,13 +147,15 @@ def mark(id_consulta, **updates):
         return data
 
 def vencer(data):
-    """Aplica prazos: consulta expirada ou Ptyxis que nunca subiu o executor."""
+    """Aplica prazos: consulta expirada, Ptyxis que nunca subiu o executor ou fila sem consumidor."""
     if data['estado'] in FINAL:
         return data
     if time.time() > data['prazo']:
         return mark(data['id'], estado='expirada', erro='Prazo da consulta esgotado')
     if data['estado'] == 'abrindo' and time.time()-data['criada'] > PRAZO_ABERTURA:
         return mark(data['id'], estado='falhou', erro='Ptyxis não iniciou o executor em 60 s')
+    if data['estado'] == 'enfileirada' and time.time()-data['criada'] > PRAZO_FILA:
+        return mark(data['id'], estado='falhou', erro='Consumidor da fila não assumiu a consulta em 120 s')
     return data
 
 def status(id_consulta, espera_segundos=0):
@@ -216,6 +246,9 @@ def checar_ambiente(*provedores):
     checar_terminal()
 
 def checar_terminal():
+    if consumidor_vivo():
+        # A IDE vai rodar o worker dentro dela: não precisa de Ptyxis nem de sessão gráfica.
+        return
     if not shutil.which('ptyxis'):
         raise ValueError('Disponibilize o Ptyxis antes de consultar')
     ambiente_grafico()
@@ -246,11 +279,16 @@ def lancar(pacote, provedor, modo, interativo, id_pedido, arquivos):
                 raise ValueError(f'Já existe consulta ativa em {projeto} com {provedor} ({old["id"]}); '
                                  'acompanhe com consulta_status ou cancele antes de abrir outra')
         id_consulta = uuid.uuid4().hex
-        data = {'id':id_consulta, 'id_pedido':id_pedido, 'provedor':provedor, 'modo':modo, 'estado':'abrindo',
+        na_fila = consumidor_vivo()
+        data = {'id':id_consulta, 'id_pedido':id_pedido, 'provedor':provedor, 'modo':modo,
+                'estado':'enfileirada' if na_fila else 'abrindo',
                 'criada':time.time(), 'prazo':time.time()+1800, 'pacote':pacote,
                 'interativo':interativo, 'arquivos':arquivos or [], 'pid_dono':None, 'ide':IDE}
         write(job_path(id_consulta)/'job.json', data)
         write(job_path(id_consulta)/'contexto.txt', pacote['texto'])
+        if na_fila:
+            # O consumidor registrado (IDE) sobe `worker` dentro dela; nenhuma janela aqui.
+            return status(id_consulta)
         args = ['ptyxis', '--new-window', '--title', 'Valt · '+provedor+' · '+id_consulta[:8], '--',
                 sys.executable, str(Path(__file__).resolve()), 'worker', id_consulta]
         try:
@@ -592,7 +630,7 @@ def ler_pergunta(id_consulta):
 
 def worker(id_consulta):
     data = read_job(id_consulta)
-    if data['estado'] != 'abrindo':
+    if data['estado'] not in ('abrindo', 'enfileirada'):
         return
     def stop(signum, frame):
         raise KeyboardInterrupt()
@@ -637,6 +675,68 @@ def worker(id_consulta):
               mensagem=(final.get('erro') or '')[:200])
     segurar_janela()
 
+def consumidor(hospedeiro='ide', uma=False, intervalo=1.0):
+    """Consome a fila dentro da IDE: registra-se com pid e batimento, e sobe `worker` em
+    subprocesso para cada consulta 'enfileirada'. Claude e Codex da rodada dupla correm juntos.
+    Enquanto o registro estiver vivo, a ponte deixa de abrir o Ptyxis. `uma` encerra após a
+    primeira consulta terminar (testes e execuções pontuais)."""
+    if consumidor_vivo():
+        dado = ler_consumidor() or {}
+        print(f"Já existe consumidor vivo (pid {dado.get('pid')}, {dado.get('hospedeiro', '?')}); um por máquina.", flush=True)
+        return 1
+    STATE.mkdir(parents=True, exist_ok=True, mode=0o700)
+    registro = {'pid': os.getpid(), 'hospedeiro': re.sub(r'[^a-z0-9-]', '', hospedeiro.lower()) or 'ide',
+                'iniciado': time.time(), 'batimento': time.time()}
+    write(consumidor_path(), registro)
+    filhos = {}
+    parar = False
+    def stop(signum, frame):
+        nonlocal parar
+        parar = True
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, stop)
+    registrar('consumidor_inicio', hospedeiro=registro['hospedeiro'], ok=True)
+    print(f"Consumidor da fila registrado ({registro['hospedeiro']}, pid {os.getpid()}). Aguardando consultas…", flush=True)
+    concluidas = 0
+    try:
+        while not parar:
+            registro['batimento'] = time.time()
+            write(consumidor_path(), registro)
+            for job in jobs_recentes():
+                jid = job.get('id')
+                if not jid or jid in filhos or job.get('estado') != 'enfileirada':
+                    continue
+                inicio = time.time()
+                proc = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'worker', jid],
+                                        stdin=subprocess.DEVNULL, stdout=sys.stdout, stderr=subprocess.STDOUT)
+                filhos[jid] = (proc, job.get('provedor', '?'), inicio)
+                print(f"[{jid[:8]} · {job.get('provedor', '?')}] assumida · {job['pacote'].get('projeto', '')}", flush=True)
+            for jid, (proc, provedor, inicio) in list(filhos.items()):
+                if proc.poll() is None:
+                    continue
+                final = read_job(jid)
+                print(f"[{jid[:8]} · {provedor}] {final.get('estado')} em {round(time.time()-inicio)} s"
+                      + (f" · {final.get('registro')}" if final.get('registro') else '')
+                      + (f" · {final.get('erro')}" if final.get('erro') else ''), flush=True)
+                del filhos[jid]
+                concluidas += 1
+                if uma:
+                    parar = True
+            if parar:
+                break
+            time.sleep(intervalo)
+    finally:
+        for proc, _, _ in filhos.values():
+            if proc.poll() is None:
+                proc.terminate()
+        try:
+            consumidor_path().unlink()
+        except OSError:
+            pass
+        registrar('consumidor_fim', hospedeiro=registro['hospedeiro'], ok=True, consultas=concluidas)
+        print('Consumidor encerrado.', flush=True)
+    return 0
+
 PROPS = {'projeto':{'type':'string','description':'Pasta do Valt com README.md, ex. Seara/Food ou Jaiminho'},
          'pergunta':{'type':'string'},
          'repositorio':{'type':'string','description':'Caminho relativo a Sites, ex. Seara/food'},
@@ -648,12 +748,12 @@ def tool(name, description, props, required):
 
 TOOLS = [tool('contexto_valt','Leia antes de planejar. Devolve as fontes do projeto (caminho e hash) e o lembrete_consultor com os gatilhos; completo=true inclui o texto das notas. Task interno não substitui o Ptyxis.',
               {**PROPS,'completo':{'type':'boolean','default':False}},['projeto','pergunta']),
-         tool('consulta_iniciar','Única forma de abrir o consultor: janela nova do Ptyxis com Claude ou Codex investigando o repositório só lendo (modo investigador, padrão) ou lendo um dossiê (modo parecer). Task, subagentes e agentes internos da IDE não contam. Após iniciar, chame consulta_status no mesmo turno até estado final. Não inicia implementação.',
+         tool('consulta_iniciar','Única forma de abrir o consultor: janela nova do Ptyxis (ou tarefa dentro da IDE, se ela consome a fila) com Claude ou Codex investigando o repositório só lendo (modo investigador, padrão) ou lendo um dossiê (modo parecer). Task, subagentes e agentes internos da IDE não contam. Após iniciar, chame consulta_status no mesmo turno até estado final. Não inicia implementação.',
               {**PROPS,'provedor':{'type':'string','enum':['claude','codex']},'interativo':{'type':'boolean','default':False},
                'modo':{'type':'string','enum':['investigador','parecer'],'default':'investigador'},'id_pedido':{'type':'string'},
                'plano':{'type':'string','description':'O plano da IDE, quando a consulta for para criticá-lo'}},
               ['projeto','pergunta','provedor','id_pedido']),
-         tool('consulta_dupla','Abre Claude e Codex ao mesmo tempo, em duas janelas do Ptyxis, sobre o MESMO dossiê, para criticarem o plano da IDE. Use quando houver um plano a validar antes de implementar. Depois chame consulta_rodada no mesmo turno até estado final.',
+         tool('consulta_dupla','Abre Claude e Codex ao mesmo tempo, em duas janelas do Ptyxis (ou dentro da IDE, se ela consome a fila), sobre o MESMO dossiê, para criticarem o plano da IDE. Use quando houver um plano a validar antes de implementar. Depois chame consulta_rodada no mesmo turno até estado final.',
               {**PROPS,'plano':{'type':'string','description':'O plano da IDE, na íntegra: é o objeto da crítica'},
                'modo':{'type':'string','enum':['investigador','parecer'],'default':'investigador'},'id_pedido':{'type':'string'}},
               ['projeto','pergunta','id_pedido']),
@@ -753,13 +853,17 @@ def rodada_automatica(bruto):
 
 if __name__=='__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('command',choices=['mcp','worker','rodada-automatica'])
+    parser.add_argument('command',choices=['mcp','worker','rodada-automatica','consumidor'])
     parser.add_argument('id_consulta',nargs='?')
+    parser.add_argument('--hospedeiro',default='ide',help='quem consome a fila (claude-desktop, codex-desktop…)')
+    parser.add_argument('--uma',action='store_true',help='encerra o consumidor após a primeira consulta')
     args=parser.parse_args()
     # Sem cancelamento ao sair: a consulta vive no disco e sobrevive a Reload Window.
     if args.command=='mcp':
         serve()
     elif args.command=='rodada-automatica':
         rodada_automatica(args.id_consulta or sys.stdin.read())
+    elif args.command=='consumidor':
+        sys.exit(consumidor(args.hospedeiro, uma=args.uma))
     else:
         worker(args.id_consulta)

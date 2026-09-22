@@ -16,7 +16,7 @@ LEMBRETE_CONSULTOR = (
     'antes do commit; migração/SQL sensível antes do commit; mesmo erro tsc/Jest/pgTAP duas vezes; '
     'revisão final com mais de 20 arquivos. Para um provedor só, chame consulta_iniciar (provedor: claude, '
     'interativo: false) e aguarde consulta_status no mesmo turno — anunciar não conta. Task, subagentes e agentes internos '
-    'da IDE (Cursor, Antigravity) não substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …). '
+    'da IDE (Cursor, Antigravity) não substituem: o consultor só abre numa janela nova do Ptyxis (título Valt · claude · …) ou, se a IDE consome a fila da ponte, dentro dela. '
     'Layout Editor e o navegador do agente não são a ponte.'
 )
 

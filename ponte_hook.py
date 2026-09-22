@@ -413,7 +413,7 @@ def chamada_dupla_pronta(projeto, repo_rel, plano, pergunta, prefixo='plano'):
              'avalie os pareceres e só então repita o commit')
     return ('Chame a ferramenta MCP consulta_dupla do servidor valt-ponte com exatamente estes argumentos:\n'
             + json.dumps(args, ensure_ascii=False)
-            + '\nEla abre Claude e Codex em duas janelas do Ptyxis. '
+            + '\nEla abre Claude e Codex em duas janelas do Ptyxis (ou dentro da IDE, se ela consome a fila). '
               'Depois chame consulta_rodada (id_pedido igual, espera_segundos 25) até estado final, '
             + fecho + '. Não substitua por Task/subagente.')
 
@@ -900,7 +900,7 @@ def regra_conferencia_no_commit(comando, pasta, conversa):
                   mensagem='conferência final aberta pelo hook; abrindo Claude e Codex')
         return negar('commit barrado: conferência final aberta agora',
                      f'O commit foi barrado: esta conversa implementou um plano ({len(relativos)} arquivos) '
-                     'e a conferência final acabou de ser aberta em duas janelas do Ptyxis. '
+                     'e a conferência final acabou de ser aberta em duas janelas do Ptyxis (ou dentro da IDE, se ela consome a fila). '
                      f'Chame consulta_rodada (id_pedido "{id_pedido}", espera_segundos 25) até o estado final, '
                      'avalie os pareceres e só então repita o commit.',
                      projeto=projeto, repositorio=repo_rel, regra='conferencia_final')
@@ -1155,7 +1155,7 @@ def rodada_do_plano_no_stop(entrada, conversa, itens=None):
     # Se falhar, `rodada_situacao` não acha nada e o próximo turno tenta de novo — até o teto.
     conversa.d['plano_tentativas'] = {**tentativas, assinatura: tentativas.get(assinatura, 0)+1}
     return retomar(conversa,
-                   'A valt-ponte abriu Claude e Codex em duas janelas do Ptyxis para criticarem este plano. '
+                   'A valt-ponte abriu Claude e Codex em duas janelas do Ptyxis (ou dentro da IDE, se ela consome a fila) para criticarem este plano. '
                    f'Chame consulta_rodada (id_pedido "{id_pedido}", espera_segundos 25) até o estado final, '
                    'compare os dois pareceres com o seu plano e só então implemente.', 'plano_novo')
 

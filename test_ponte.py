@@ -225,6 +225,65 @@ class PonteTest(unittest.TestCase):
         jid=self.create_job(estado='abrindo',criada=time.time()-61)
         resposta=ponte.status(jid)
         self.assertEqual(resposta['estado'],'falhou');self.assertIn('60 s',resposta['erro'])
+    # --- fila da IDE (consumidor)
+    def registrar_consumidor(self,pid=None,idade=0):
+        ponte.write(ponte.consumidor_path(),{'pid':pid or os.getpid(),'hospedeiro':'teste','iniciado':time.time(),'batimento':time.time()-idade})
+    def test_consumidor_vivo_enfileira_sem_ptyxis(self):
+        self.registrar_consumidor()
+        with patch('ponte.shutil.which',side_effect=lambda n:None if n=='ptyxis' else '/fake'),patch.dict(os.environ,{'DISPLAY':'','WAYLAND_DISPLAY':''}),patch('ponte.subprocess.Popen') as popen:
+            data=ponte.start('Seara/Food','login','claude',id_pedido='fila1')
+            self.assertEqual(data['estado'],'enfileirada');self.assertEqual(popen.call_count,0)
+            self.assertIsNone(ponte.read_job(data['id'])['pid_dono'])
+    def test_consumidor_com_batimento_velho_volta_ao_ptyxis(self):
+        self.registrar_consumidor(idade=ponte.BATIMENTO_MAX+1)
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen') as popen:
+            self.assertEqual(ponte.start('Seara/Food','login','claude',id_pedido='fila2')['estado'],'abrindo')
+            self.assertEqual(popen.call_count,1)
+    def test_consumidor_morto_volta_ao_ptyxis(self):
+        self.registrar_consumidor(pid=999999999)
+        self.assertFalse(ponte.consumidor_vivo())
+        with patch('ponte.shutil.which',return_value='/fake'),patch.dict(os.environ,{'DISPLAY':':0'}),patch('ponte.subprocess.Popen') as popen:
+            self.assertEqual(ponte.start('Seara/Food','login','claude',id_pedido='fila3')['estado'],'abrindo')
+            self.assertEqual(popen.call_count,1)
+    def test_sem_consumidor_exige_ptyxis(self):
+        self.assertFalse(ponte.consumidor_vivo())
+        with patch('ponte.shutil.which',return_value=None):
+            with self.assertRaises(ValueError):ponte.checar_terminal()
+    def test_enfileirada_sem_consumidor_falha_em_120s(self):
+        jid=self.create_job(estado='enfileirada',criada=time.time()-121)
+        resposta=ponte.status(jid)
+        self.assertEqual(resposta['estado'],'falhou');self.assertIn('120 s',resposta['erro'])
+        jid2=self.create_job(estado='enfileirada',criada=time.time()-61)
+        self.assertEqual(ponte.status(jid2,espera_segundos=0)['estado'],'enfileirada')
+    def test_worker_aceita_enfileirada(self):
+        jid=self.create_job(estado='enfileirada')
+        with patch('ponte.provider_command',return_value=[sys.executable,'-c','import sys; p=sys.stdin.read(); print("Veredito: fila" if p else "")']),patch('builtins.print'):
+            ponte.worker(jid)
+        self.assertEqual(ponte.status(jid)['estado'],'concluida')
+    def test_consumidor_ponta_a_ponta(self):
+        jid=self.create_job(estado='enfileirada')
+        falso=[sys.executable,'-c','import sys; p=sys.stdin.read(); print("Veredito: consumido" if p else "")']
+        # o worker sobe em subprocesso; aqui ele roda in-process com provedor falso, e o Popen do provedor segue real
+        real=subprocess.Popen
+        def popen(args,**kw):
+            return self.worker_local(args,falso) if 'worker' in args else real(args,**kw)
+        with patch('ponte.subprocess.Popen',side_effect=popen),patch('builtins.print'):
+            self.assertEqual(ponte.consumidor('claude-desktop',uma=True,intervalo=0.05),0)
+        self.assertEqual(ponte.status(jid)['estado'],'concluida')
+        self.assertFalse(ponte.consumidor_path().exists())
+        eventos=[c['ferramenta'] for c in self.chamadas()]
+        self.assertIn('consumidor_inicio',eventos);self.assertIn('consumidor_fim',eventos)
+    def worker_local(self,args,falso):
+        # Executa o worker na hora, in-process, com o provedor falso; devolve algo com poll().
+        with patch('ponte.provider_command',return_value=falso):ponte.worker(args[-1])
+        class Feito:
+            def poll(self):return 0
+            def terminate(self):pass
+        return Feito()
+    def test_segundo_consumidor_recusado(self):
+        self.registrar_consumidor()
+        with patch('builtins.print'):self.assertEqual(ponte.consumidor('outro'),1)
+        self.assertEqual(ponte.ler_consumidor()['hospedeiro'],'teste')
     def test_abrindo_preso_nao_trava_nova_consulta(self):
         self.create_job(estado='abrindo',criada=time.time()-61)
         self.assertEqual(self.abrir(pedido='r2')['estado'],'abrindo')

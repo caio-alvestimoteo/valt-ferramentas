@@ -10,13 +10,15 @@ conta errada depois que o papel "pessoal" mudou de significado.
 
 Uso::
 
-    python3 scripts/checar-caminhos.py                      # vault inteiro
-    python3 scripts/checar-caminhos.py a.md b.md            # só os arquivos dados (hooks)
-    python3 scripts/checar-caminhos.py --raiz ~/ComoTestar  # outra árvore do ecossistema
+    python3 checar-caminhos.py                         # vault inteiro (neste repo)
+    python3 checar-caminhos.py a.md b.md               # só os arquivos dados (hooks)
+    python3 checar-caminhos.py --raiz ~/ComoTestar     # outra árvore do ecossistema
+    python3 checar-caminhos.py --texto < patch.txt     # blob no stdin (apply_patch do Codex)
+    python3 checar-caminhos.py --stdin < patch.txt     # alias de --texto
 
-A trava vale nas seis árvores, não só no vault: ``~/ComoTestar`` e ``~/ComoApresentar`` são
-repositórios à parte e carregam o próprio ``.caminhos-legado``, então precisam ser checados a
-partir de suas raízes.
+A trava vale no vault e nas árvores derivadas (Planejamentos, Formalizados, ComoTestar,
+ComoApresentar, Insights, Insites, Memorias). ``~/ComoTestar`` e irmãs são repositórios à
+parte e carregam o próprio ``.caminhos-legado``.
 
 Sai 1 se achar algo fora da allowlist de ``.caminhos-legado``.
 """
@@ -102,10 +104,38 @@ def separar_raiz(argumentos: list[str]) -> tuple[Path, list[str]]:
     return VAULT, argumentos
 
 
+# Marcadores estruturais de patch (apply_patch / unified). NÃO usar só +/- :
+# bullets Markdown "- item" são texto solto e precisam ser vistos inteiros.
+PATCH_MARCA = re.compile(
+    r"(?m)^(?:\*\*\* Begin Patch|\*\*\* (?:Add|Update|Delete|Move) File:|"
+    r"@@ |--- a/|\+\+\+ b/)"
+)
+
+
+def _linhas_para_checar(texto: str) -> list[tuple[int, str]]:
+    """Em patch estrutural, só conteúdo novo (+ e cabeçalhos de arquivo); senão, tudo."""
+    linhas = texto.splitlines()
+    if not PATCH_MARCA.search(texto):
+        return [(n, ln) for n, ln in enumerate(linhas, 1)]
+    saida: list[tuple[int, str]] = []
+    for n, ln in enumerate(linhas, 1):
+        if ln.startswith("+") and not ln.startswith("+++"):
+            saida.append((n, ln[1:]))
+            continue
+        m = re.match(r"\*\*\* (?:Add|Update|Delete|Move) File:\s*(.+)$", ln)
+        if m:
+            saida.append((n, m.group(1)))
+            continue
+        m = re.match(r"\+\+\+ b/(.+)$", ln)
+        if m:
+            saida.append((n, m.group(1)))
+    return saida
+
+
 def checar_texto(texto: str, rotulo: str = "<stdin>") -> list[str]:
-    """Aplica as mesmas regras a um blob (patch do Codex, stdin)."""
+    """Aplica as mesmas regras a um blob (patch do Codex ou texto solto no stdin)."""
     achados: list[str] = []
-    for numero, linha in enumerate(texto.splitlines(), 1):
+    for numero, linha in _linhas_para_checar(texto):
         for nome, padrao, dica in REGRAS:
             achado = padrao.search(linha)
             if achado:
@@ -116,8 +146,8 @@ def checar_texto(texto: str, rotulo: str = "<stdin>") -> list[str]:
 
 
 def main(argumentos: list[str]) -> int:
-    if argumentos and argumentos[0] in ("--texto", "--stdin"):
-        blob = sys.stdin.read()
+    if "--texto" in argumentos or "--stdin" in argumentos:
+        blob = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         achados = checar_texto(blob)
         if achados:
             print(f"✗ {len(achados)} ocorrência(s) que não sobrevivem a uma formatação:\n")
@@ -142,13 +172,7 @@ def main(argumentos: list[str]) -> int:
         except (UnicodeDecodeError, OSError):
             continue
 
-        for numero, linha in enumerate(linhas, 1):
-            for rotulo, padrao, dica in REGRAS:
-                achado = padrao.search(linha)
-                if achado:
-                    achados.append(
-                        f"{relativo}:{numero}: {rotulo} '{achado.group(0)}' — {dica}"
-                    )
+        achados.extend(checar_texto("\n".join(linhas), relativo))
 
     if achados:
         print(f"✗ {len(achados)} ocorrência(s) que não sobrevivem a uma formatação:\n")

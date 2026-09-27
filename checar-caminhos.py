@@ -102,7 +102,30 @@ def separar_raiz(argumentos: list[str]) -> tuple[Path, list[str]]:
     return VAULT, argumentos
 
 
+def checar_texto(texto: str, rotulo: str = "<stdin>") -> list[str]:
+    """Aplica as mesmas regras a um blob (patch do Codex, stdin)."""
+    achados: list[str] = []
+    for numero, linha in enumerate(texto.splitlines(), 1):
+        for nome, padrao, dica in REGRAS:
+            achado = padrao.search(linha)
+            if achado:
+                achados.append(
+                    f"{rotulo}:{numero}: {nome} '{achado.group(0)}' — {dica}"
+                )
+    return achados
+
+
 def main(argumentos: list[str]) -> int:
+    if argumentos and argumentos[0] in ("--texto", "--stdin"):
+        blob = sys.stdin.read()
+        achados = checar_texto(blob)
+        if achados:
+            print(f"✗ {len(achados)} ocorrência(s) que não sobrevivem a uma formatação:\n")
+            print("\n".join(achados))
+            return 1
+        print("✓ nenhum caminho ou apelido frágil encontrado")
+        return 0
+
     raiz, argumentos = separar_raiz(argumentos)
     allowlist = carregar_allowlist(raiz)
     achados: list[str] = []
